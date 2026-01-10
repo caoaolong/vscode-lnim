@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src {{cspSource}} 'unsafe-inline'; script-src {{cspSource}} 'unsafe-inline';">
     <title>LNIM Chat</title>
     <style>
         body {
@@ -16,26 +17,93 @@
             height: 100vh;
             overflow: hidden;
         }
+        
+        /* Header Styles */
+        #header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px;
+            background-color: var(--vscode-sideBar-background);
+            border-bottom: 1px solid var(--vscode-widget-border);
+        }
+        #header h3 {
+            margin: 0;
+            font-size: 14px;
+        }
+        #settings-btn {
+            cursor: pointer;
+            color: var(--vscode-icon-foreground);
+            background: none;
+            border: none;
+            padding: 2px;
+        }
+        #settings-btn:hover {
+            color: var(--vscode-foreground);
+        }
+
+        /* Chat Box Styles */
         #chat-box {
             flex-grow: 1;
             overflow-y: auto;
             padding: 10px;
             display: flex;
             flex-direction: column;
+            gap: 5px;
         }
-        .message {
-            margin-bottom: 8px;
-            padding: 8px;
-            background-color: var(--vscode-list-hoverBackground);
-            border-radius: 4px;
+        
+        /* Message Styles */
+        .message-container {
+            display: flex;
+            flex-direction: column;
             max-width: 85%;
-            word-wrap: break-word;
+            margin-bottom: 8px;
         }
-        .message.self {
+        .message-container.self {
             align-self: flex-end;
+            align-items: flex-end;
+        }
+        .message-container.other {
+            align-self: flex-start;
+            align-items: flex-start;
+        }
+        
+        .nickname {
+            font-size: 11px;
+            color: var(--vscode-descriptionForeground);
+            margin-bottom: 2px;
+            padding: 0 4px;
+        }
+        
+        .message {
+            padding: 8px 12px;
+            border-radius: 8px;
+            word-wrap: break-word;
+            position: relative;
+        }
+        .message-container.self .message {
             background-color: var(--vscode-button-background);
             color: var(--vscode-button-foreground);
+            border-bottom-right-radius: 2px;
         }
+        .message-container.other .message {
+            background-color: var(--vscode-list-hoverBackground);
+            color: var(--vscode-foreground);
+            border-bottom-left-radius: 2px;
+        }
+
+        /* Timestamp Styles */
+        .timestamp {
+            align-self: center;
+            font-size: 11px;
+            color: var(--vscode-descriptionForeground);
+            background-color: var(--vscode-textBlockQuote-background);
+            padding: 2px 8px;
+            border-radius: 10px;
+            margin: 10px 0;
+        }
+
+        /* Input Area Styles */
         #input-container {
             flex-shrink: 0;
             padding: 10px;
@@ -62,37 +130,223 @@
             content: attr(placeholder);
             color: var(--vscode-input-placeholderForeground);
         }
+
+        /* Settings Overlay Styles */
+        #settings-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            display: none;
+            justify-content: center;
+            align-items: flex-start;
+            z-index: 100;
+            padding-top: 50px;
+        }
+        #settings-panel {
+            background-color: var(--vscode-editor-background);
+            padding: 20px;
+            border: 1px solid var(--vscode-widget-border);
+            border-radius: 5px;
+            width: 80%;
+            max-width: 300px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .form-group input {
+            width: 100%;
+            padding: 6px;
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            border: 1px solid var(--vscode-input-border);
+            box-sizing: border-box;
+        }
+        .button-group {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+        button {
+            padding: 6px 12px;
+            border: none;
+            cursor: pointer;
+            border-radius: 2px;
+        }
+        #save-btn {
+            background-color: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+        }
+        #cancel-btn {
+            background-color: var(--vscode-button-secondaryBackground);
+            color: var(--vscode-button-secondaryForeground);
+        }
     </style>
 </head>
 <body>
+    <div id="header">
+        <h3>LNIM Chat</h3>
+        <button id="settings-btn" title="Settings">
+            <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
+                <path d="M9.1 4.4L8.6 2H7.4l-.5 2.4-.7.3-2-1.3-.9.8 1.3 2-.2.7-2.4.5v1.2l2.4.5.3.8-1.3 2 .8.8 2-1.3.8.3.4 2.3h1.2l.5-2.4.8-.3 2 1.3.8-.8-1.3-2 .3-.8 2.3-.4V7.4l-2.4-.5-.3-.8 1.3-2-.8-.8-2 1.3-.7-.2zM8 11a3 3 0 1 1 0-6 3 3 0 0 1 0 6z"/>
+            </svg>
+        </button>
+    </div>
+
     <div id="chat-box"></div>
+
     <div id="input-container">
         <div id="message-input" contenteditable="true" placeholder="Type a message..."></div>
     </div>
+
+    <div id="settings-overlay">
+        <div id="settings-panel">
+            <h3>Settings</h3>
+            <div class="form-group">
+                <label for="nickname">Nickname</label>
+                <input type="text" id="nickname" placeholder="Enter your nickname">
+            </div>
+            <div class="form-group">
+                <label for="ip-address">IP Address</label>
+                <input type="text" id="ip-address" placeholder="Enter IP address">
+            </div>
+            <div class="button-group">
+                <button id="cancel-btn">Cancel</button>
+                <button id="save-btn">Save</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         const vscode = acquireVsCodeApi();
         const chatBox = document.getElementById('chat-box');
         const input = document.getElementById('message-input');
+        const settingsOverlay = document.getElementById('settings-overlay');
+        const nicknameInput = document.getElementById('nickname');
+        const ipInput = document.getElementById('ip-address');
+
+        let currentUserSettings = {
+            nickname: 'User',
+            ip: ''
+        };
+        let lastMessageTime = 0;
+
+        // --- Event Listeners ---
 
         input.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 const message = input.innerText.trim();
                 if (message) {
-                    addMessage('You: ' + message, true);
+                    sendMessage(message);
                     input.innerText = '';
-                    // vscode.postMessage({ type: 'sendMessage', value: message });
                 }
             }
         });
 
-        function addMessage(text, isSelf = false) {
-            const div = document.createElement('div');
-            div.className = 'message' + (isSelf ? ' self' : '');
-            div.textContent = text;
-            chatBox.appendChild(div);
+        document.getElementById('settings-btn').addEventListener('click', () => {
+            // Fill inputs with current settings
+            nicknameInput.value = currentUserSettings.nickname;
+            ipInput.value = currentUserSettings.ip;
+            settingsOverlay.style.display = 'flex';
+        });
+
+        document.getElementById('cancel-btn').addEventListener('click', () => {
+            settingsOverlay.style.display = 'none';
+        });
+
+        document.getElementById('save-btn').addEventListener('click', () => {
+            const newSettings = {
+                nickname: nicknameInput.value.trim() || 'User',
+                ip: ipInput.value.trim()
+            };
+            vscode.postMessage({ type: 'saveSettings', settings: newSettings });
+            // Optimistically update local settings
+            currentUserSettings = newSettings;
+            settingsOverlay.style.display = 'none';
+        });
+
+        // --- Message Handling ---
+
+        window.addEventListener('message', event => {
+            const message = event.data;
+            switch (message.type) {
+                case 'updateSettings':
+                    currentUserSettings = message.settings;
+                    break;
+                case 'settingsSaved':
+                    currentUserSettings = message.settings;
+                    break;
+                // Handle other messages like 'receiveMessage' in future
+            }
+        });
+
+        function sendMessage(text) {
+            const now = Date.now();
+            checkAndAddTimestamp(now);
+            
+            addMessage({
+                text: text,
+                isSelf: true,
+                nickname: currentUserSettings.nickname,
+                timestamp: now
+            });
+
+            vscode.postMessage({ 
+                type: 'sendMessage', 
+                value: text,
+                timestamp: now,
+                nickname: currentUserSettings.nickname
+            });
+            
+            lastMessageTime = now;
+        }
+
+        function checkAndAddTimestamp(currentTimestamp) {
+            if (currentTimestamp - lastMessageTime > 10 * 60 * 1000) {
+                const date = new Date(currentTimestamp);
+                const timeString = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                
+                const div = document.createElement('div');
+                div.className = 'timestamp';
+                div.textContent = timeString;
+                chatBox.appendChild(div);
+            }
+        }
+
+        function addMessage({ text, isSelf, nickname }) {
+            const container = document.createElement('div');
+            container.className = 'message-container' + (isSelf ? ' self' : ' other');
+            
+            const nicknameDiv = document.createElement('div');
+            nicknameDiv.className = 'nickname';
+            nicknameDiv.textContent = nickname;
+            
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message';
+            messageDiv.textContent = text;
+            
+            container.appendChild(nicknameDiv);
+            container.appendChild(messageDiv);
+            
+            chatBox.appendChild(container);
             chatBox.scrollTop = chatBox.scrollHeight;
         }
+
+        // --- Initialization ---
+        
+        // Request initial settings
+        vscode.postMessage({ type: 'getSettings' });
+
     </script>
 </body>
 </html>
