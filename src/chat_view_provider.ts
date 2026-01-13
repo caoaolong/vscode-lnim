@@ -1,11 +1,11 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
-import Peer from "peerjs";
+import Peer, { LogLevel } from "peerjs";
 
 interface UserSettings {
-    nickname: string;
-    ip: string;
+  nickname: string;
+  ip: string;
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -20,12 +20,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private readonly _extensionUri: vscode.Uri,
     private readonly _context: vscode.ExtensionContext
   ) {
-		// this.peer = new Peer("");
-        this._userSettings = this._context.globalState.get<UserSettings>("userSettings", {
-            nickname: "User",
-            ip: "",
-        });
-	}
+    this._userSettings = this._context.globalState.get<UserSettings>(
+      "userSettings",
+      {
+        nickname: "User",
+        ip: "",
+      }
+    );
+    const id = Buffer.from(
+      `${this._userSettings.ip}-${this._userSettings.nickname}`,
+      "utf8"
+    ).toString("base64");
+    this.peer = new Peer(id, {
+      debug: LogLevel.All,
+    });
+    console.log(`Peer initialized with ID: ${id}, `, this.peer);
+  }
 
   public resolveWebviewView(
     webviewView: vscode.WebviewView,
