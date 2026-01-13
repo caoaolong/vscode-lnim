@@ -1,11 +1,15 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
-import Peer, { LogLevel } from "peerjs";
+import Peer from "peerjs";
 
 interface UserSettings {
   nickname: string;
   ip: string;
+}
+interface Contact {
+  ip: string;
+  username: string;
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -15,6 +19,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private _view?: vscode.WebviewView;
   private _userSettings: UserSettings;
+  private _contacts: Contact[];
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
@@ -27,12 +32,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         ip: "",
       }
     );
+    this._contacts = this._context.globalState.get<Contact[]>("contacts", []);
     const id = Buffer.from(
       `${this._userSettings.ip}-${this._userSettings.nickname}`,
       "utf8"
     ).toString("base64");
     this.peer = new Peer(id, {
-      debug: LogLevel.All,
+      debug: 3,
     });
     console.log(`Peer initialized with ID: ${id}, `, this.peer);
   }
@@ -70,6 +76,84 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             type: "updateSettings",
             settings: this._userSettings,
           });
+          break;
+        }
+        case "getContacts": {
+          webviewView.webview.postMessage({
+            type: "updateContacts",
+            contacts: this._contacts,
+          });
+          break;
+        }
+        case "addContact": {
+          const c: Contact = data.contact;
+          if (c?.ip && c?.username) {
+            const exists = this._contacts.some(
+              (x) => x.ip === c.ip && x.username === c.username
+            );
+            if (!exists) {
+              this._contacts.push(c);
+              await this._context.globalState.update("contacts", this._contacts);
+            }
+          }
+          webviewView.webview.postMessage({
+            type: "contactsSaved",
+            contacts: this._contacts,
+          });
+          break;
+        }
+        case "deleteContact": {
+          const c: Contact = data.contact;
+          this._contacts = this._contacts.filter(
+            (x) => !(x.ip === c?.ip && x.username === c?.username)
+          );
+          await this._context.globalState.update("contacts", this._contacts);
+          webviewView.webview.postMessage({
+            type: "contactsSaved",
+            contacts: this._contacts,
+          });
+          break;
+        }
+        case "getFilesAndFolders": {
+          try {
+            const files = await vscode.workspace.findFiles(
+              "**/*",
+              "**/{node_modules,.git,.vscode,out,dist}/**",
+              200
+            );
+            const filePaths = files.map((u) =>
+              vscode.workspace.asRelativePath(u, false)
+            );
+            const dirSet = new Set<string>();
+            for (const u of files) {
+              const dir = path.dirname(u.fsPath);
+              const rel = vscode.workspace.asRelativePath(dir, false);
+              if (rel && rel !== ".") {
+                dirSet.add(rel.replace(/\\/g, "/"));
+              }
+            }
+            const folders = Array.from(dirSet).sort().slice(0, 200);
+            webviewView.webview.postMessage({
+              type: "filesAndFolders",
+              files: filePaths.map((p) => p.replace(/\\/g, "/")),
+              folders,
+            });
+          } catch {
+            webviewView.webview.postMessage({
+              type: "filesAndFolders",
+              files: [],
+              folders: [],
+            });
+          }
+          break;
+        }
+        case "tagClicked": {
+          const item = data.item;
+          const label = item?.label ?? item?.value ?? "";
+          const tagType = item?.type ?? "mention";
+          vscode.window.showInformationMessage(
+            `Tag clicked: ${label} (${tagType})`
+          );
           break;
         }
         case "sendMessage": {
