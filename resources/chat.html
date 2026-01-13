@@ -184,15 +184,16 @@
             gap: 0.35em;
             padding: 0 0.45em;
             margin: 0 0.2em;
-            height: 1.4em;
-            border-radius: 0.75em;
-            background: var(--vscode-textBlockQuote-background);
+            height: 1.45em;
+            border-radius: 2px;
+            background: transparent;
             border: 1px solid var(--vscode-widget-border);
             color: var(--vscode-foreground);
             line-height: 1;
             user-select: none;
             cursor: pointer;
-            vertical-align: middle;
+            vertical-align: text-bottom;
+            transform: translateY(-0.05em);
         }
         .mention-tag .codicon {
             font-size: 0.9em;
@@ -213,6 +214,14 @@
         .mention-tag .close:hover {
             color: var(--vscode-errorForeground);
         }
+        .mention-tag[data-type="contact"] { border-color: var(--vscode-charts-green, #89d185); color: var(--vscode-charts-green, #89d185); }
+        .mention-tag[data-type="folder"] { border-color: var(--vscode-charts-yellow, #cca700); color: var(--vscode-charts-yellow, #cca700); }
+        .mention-tag[data-type="file"] { border-color: var(--vscode-charts-blue, #3794ff); color: var(--vscode-charts-blue, #3794ff); }
+        .mention-tag[data-type="image"] { border-color: var(--vscode-charts-purple, #b180d7); color: var(--vscode-charts-purple, #b180d7); }
+        .mention-tag[data-type="contact"] .codicon { color: inherit; }
+        .mention-tag[data-type="folder"] .codicon { color: inherit; }
+        .mention-tag[data-type="file"] .codicon { color: inherit; }
+        .mention-tag[data-type="image"] .codicon { color: inherit; }
 
         /* Settings Overlay Styles */
         #settings-overlay {
@@ -391,6 +400,11 @@
     <div id="input-container">
         <div id="message-input" contenteditable="true" placeholder="Type a message..."></div>
         <div id="mention-suggest"></div>
+        <div id="input-toolbar" style="margin-top: 4px;">
+            <button id="image-btn" class="icon-btn" title="插入图片">
+                <span class="codicon codicon-file-media"></span>
+            </button>
+        </div>
     </div>
 
     <div id="settings-overlay">
@@ -423,6 +437,7 @@
         const contactUsernameInput = document.getElementById('contact-username');
         const contactsTbody = document.getElementById('contacts-tbody');
         const mentionSuggest = document.getElementById('mention-suggest');
+        const imageBtn = document.getElementById('image-btn');
 
         let currentUserSettings = {
             nickname: 'User',
@@ -437,6 +452,10 @@
         let mentionQuery = '';
         let mentionItems = [];
         let mentionIndex = -1;
+        let mentionTrigger = '';
+        let contextMenuTarget = null;
+        let currentBrowsePath = '';
+        let directoryItems = [];
 
         // --- Event Listeners ---
 
@@ -457,6 +476,33 @@
                         renderMention();
                     }
                     return;
+                }
+                if (e.key === 'ArrowRight') {
+                    if (mentionTrigger === '#' && mentionItems.length && mentionIndex >= 0) {
+                        const item = mentionItems[mentionIndex];
+                        if (item.type === 'folder') {
+                            e.preventDefault();
+                            // Enter folder
+                            currentBrowsePath = item.value; // Full relative path
+                            mentionQuery = ''; // Reset query to show all in folder
+                            vscode.postMessage({ type: 'getDirectoryContent', path: currentBrowsePath });
+                            // We might want to update input text to show path? 
+                            // User request: "Display subdirectories, recursively".
+                            // Usually this means the popup updates.
+                            // If we update input text, it might interfere with "back".
+                            // But let's keep input text as is (just #...) until selection.
+                            // OR does user expect input to become #path/to/folder/?
+                            // If I type #src, select src, press right, I see contents of src.
+                            // If I then select a file, it inserts #src/file.
+                            // This implies we don't necessarily update input text until final selection, 
+                            // OR we do update it. 
+                            // If we don't update input text, the filter uses "src" against "fileInSrc"? No.
+                            // If I entered "src", filter matched "src".
+                            // If I enter folder, I should probably clear the query part of input or update it?
+                            // Let's assume for now we just browse in popup.
+                            return;
+                        }
+                    }
                 }
                 if (e.key === 'Enter') {
                     e.preventDefault();
@@ -482,7 +528,7 @@
                 }
                 return;
             }
-            if (e.key === '@') {
+            if (e.key === '@' || e.key === '#') {
                 setTimeout(() => {
                     openMentionIfNeeded();
                 }, 0);
@@ -529,6 +575,61 @@
                 filterMention();
             }
         });
+
+        imageBtn.addEventListener('click', () => {
+            vscode.postMessage({ type: 'selectImage' });
+        });
+
+        // Drag and Drop
+        input.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+        });
+        input.addEventListener('drop', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                const file = e.dataTransfer.files[0];
+                let path = file.path;
+                if (path) {
+                    let type = 'file';
+                    if (!file.type && !path.includes('.')) type = 'folder';
+                    if (file.type && file.type.startsWith('image/')) type = 'image';
+                    const label = file.name || path.split(/[\/\\]/).pop();
+                    const item = { type, value: path, label: label };
+                    insertTagAtCursor(item);
+                }
+                return;
+            }
+            const text = e.dataTransfer.getData('text/plain');
+            if (text && (text.includes('/') || text.includes('\\'))) {
+                const label = text.split(/[\/\\]/).pop();
+                const type = /\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(text) ? 'image' : 'file';
+                const item = { type, value: text, label: label };
+                insertTagAtCursor(item);
+            }
+        });
+
+        function insertTagAtCursor(item) {
+             const tag = createMentionTag(item, { closable: true, source: 'input' });
+             input.focus();
+             const sel = window.getSelection();
+             if (sel.rangeCount > 0) {
+                 const range = sel.getRangeAt(0);
+                 range.deleteContents();
+                 range.insertNode(tag);
+                 range.collapse(false);
+                 const space = document.createTextNode(' ');
+                 range.insertNode(space);
+                 range.collapse(false);
+                 sel.removeAllRanges();
+                 sel.addRange(range);
+             } else {
+                 input.appendChild(tag);
+                 input.appendChild(document.createTextNode(' '));
+                 placeCaretAtEnd(input);
+             }
+        }
 
         document.getElementById('settings-btn').addEventListener('click', () => {
             // Fill inputs with current settings
@@ -592,7 +693,39 @@
                 case 'filesAndFolders':
                     filesCache = message.files || [];
                     foldersCache = message.folders || [];
-                    if (mentionActive) filterMention();
+                    // We might not use this for # anymore if we use directoryContent
+                    break;
+                case 'directoryContent': {
+                    const pathPrefix = message.path ? (message.path + '/') : '';
+                    directoryItems = [];
+                    // Add ".." if not root?
+                    if (message.path) {
+                        // We could add a parent entry, but user didn't explicitly ask for it.
+                        // But standard navigation usually has it.
+                        // For now, let's stick to showing folders/files.
+                        // To go back, maybe backspace handles it if we sync input?
+                        // Actually, if we are browsing, we are just changing the list content.
+                    }
+                    (message.folders || []).forEach(f => {
+                        directoryItems.push({ type: 'folder', label: f, value: pathPrefix + f });
+                    });
+                    (message.files || []).forEach(f => {
+                        directoryItems.push({ type: 'file', label: f, value: pathPrefix + f });
+                    });
+                    
+                    if (mentionActive && mentionTrigger === '#') {
+                        filterMention();
+                    }
+                    break;
+                }
+                case 'imageSelected':
+                    if (message.path) {
+                        insertTagAtCursor({ 
+                            type: 'image', 
+                            value: message.path, 
+                            label: message.label || message.path.split('/').pop() 
+                        });
+                    }
                     break;
                 // Handle other messages like 'receiveMessage' in future
             }
@@ -700,8 +833,12 @@
             if (!mentionActive) {
                 mentionActive = true;
                 mentionIndex = -1;
-                vscode.postMessage({ type: 'getContacts' });
-                vscode.postMessage({ type: 'getFilesAndFolders' });
+                if (mentionTrigger === '@') {
+                    vscode.postMessage({ type: 'getContacts' });
+                } else if (mentionTrigger === '#') {
+                    currentBrowsePath = '';
+                    vscode.postMessage({ type: 'getDirectoryContent', path: '' });
+                }
             }
             mentionQuery = q;
             filterMention();
@@ -711,6 +848,8 @@
             mentionQuery = '';
             mentionItems = [];
             mentionIndex = -1;
+            mentionTrigger = '';
+            currentBrowsePath = '';
             mentionSuggest.style.display = 'none';
             mentionSuggest.innerHTML = '';
         }
@@ -721,37 +860,51 @@
             const caret = getCaretCharacterOffsetWithin(input);
             if (caret === null) return null;
             const before = text.slice(0, caret);
+            
             const at = before.lastIndexOf('@');
-            if (at === -1) return null;
-            if (at > 0) {
-                const prev = before.charAt(at - 1);
+            const hash = before.lastIndexOf('#');
+            
+            let index = -1;
+            let trigger = '';
+            
+            if (at > hash) {
+                index = at;
+                trigger = '@';
+            } else {
+                index = hash;
+                trigger = '#';
+            }
+            
+            if (index === -1) return null;
+            if (index > 0) {
+                const prev = before.charAt(index - 1);
                 if (!/\s/.test(prev)) return null;
             }
-            const query = before.slice(at + 1);
+            
+            const query = before.slice(index + 1);
             if (/\s/.test(query)) return null;
+            
+            mentionTrigger = trigger;
             return query;
         }
         function filterMention() {
             const q = mentionQuery.toLowerCase();
-            const contactItems = (allContacts || []).map(c => ({
-                type: 'contact',
-                label: c.username,
-                value: c.username,
-                detail: c.ip
-            }));
-            const fileItems = (filesCache || []).map(p => ({
-                type: 'file',
-                label: p,
-                value: p
-            }));
-            const folderItems = (foldersCache || []).map(p => ({
-                type: 'folder',
-                label: p,
-                value: p
-            }));
-            const combined = contactItems.concat(folderItems).concat(fileItems);
-            mentionItems = combined.filter(it => !q || it.label.toLowerCase().includes(q));
+            let sourceItems = [];
+            
+            if (mentionTrigger === '@') {
+                sourceItems = (allContacts || []).map(c => ({
+                    type: 'contact',
+                    label: c.username,
+                    value: c.username,
+                    detail: c.ip
+                }));
+            } else if (mentionTrigger === '#') {
+                sourceItems = directoryItems;
+            }
+            
+            mentionItems = sourceItems.filter(it => !q || it.label.toLowerCase().includes(q));
             if (mentionItems.length > 0 && mentionIndex === -1) mentionIndex = 0;
+            if (mentionIndex >= mentionItems.length) mentionIndex = 0;
             renderMention();
         }
         function renderMention() {
@@ -762,26 +915,32 @@
             }
             mentionSuggest.style.display = 'block';
             mentionSuggest.innerHTML = '';
+            
             mentionItems.slice(0, 50).forEach((it, idx) => {
                 const div = document.createElement('div');
                 div.className = 'mention-item' + (idx === mentionIndex ? ' active' : '');
                 const icon = document.createElement('span');
-                icon.className = 'codicon ' + (it.type === 'contact' ? 'codicon-account' : it.type === 'folder' ? 'codicon-folder' : 'codicon-file');
+                icon.className = 'codicon ' + (it.type === 'contact' ? 'codicon-account' : it.type === 'folder' ? 'codicon-folder' : it.type === 'image' ? 'codicon-file-media' : 'codicon-file');
                 const label = document.createElement('span');
                 label.textContent = it.label;
                 div.appendChild(icon);
                 div.appendChild(label);
+                
+                if (mentionTrigger === '#' && it.type === 'folder') {
+                    const arrow = document.createElement('span');
+                    arrow.className = 'codicon codicon-chevron-right';
+                    arrow.style.marginLeft = 'auto';
+                    arrow.style.fontSize = '12px';
+                    div.appendChild(arrow);
+                }
+                
                 if (it.detail) {
                     const t = document.createElement('span');
                     t.className = 'type';
                     t.textContent = it.detail;
                     div.appendChild(t);
-                } else {
-                    const t = document.createElement('span');
-                    t.className = 'type';
-                    t.textContent = it.type;
-                    div.appendChild(t);
-                }
+                } 
+                
                 div.addEventListener('mouseenter', () => {
                     mentionIndex = idx;
                     renderMention();
@@ -811,24 +970,31 @@
             const textNode = container;
             const beforeText = textNode.data.slice(0, range.startOffset);
             const afterText = textNode.data.slice(range.startOffset);
+            
             const atIndex = beforeText.lastIndexOf('@');
-            if (atIndex === -1) return;
-            if (atIndex > 0) {
-                const prevCh = beforeText.charAt(atIndex - 1);
-                if (!/\s/.test(prevCh)) return;
-            }
-            const head = beforeText.slice(0, atIndex);
+            const hashIndex = beforeText.lastIndexOf('#');
+            const index = Math.max(atIndex, hashIndex);
+            
+            if (index === -1) return;
+            
+            const head = beforeText.slice(0, index);
             textNode.data = head;
+            
             const tag = createMentionTag(item, { closable: true, source: 'input' });
+            
             const space = document.createTextNode(' ');
             const tail = document.createTextNode(afterText);
+            
             if (textNode.nextSibling) {
                 textNode.parentNode.insertBefore(tag, textNode.nextSibling);
             } else {
                 textNode.parentNode.appendChild(tag);
             }
+            // Insert space after tag
             tag.parentNode.insertBefore(space, tag.nextSibling);
+            // Insert tail after space
             space.parentNode.insertBefore(tail, space.nextSibling);
+            
             const newRange = document.createRange();
             newRange.setStart(tail, 0);
             newRange.collapse(true);
@@ -836,6 +1002,7 @@
             sel.addRange(newRange);
             input.focus();
         }
+
         function createMentionTag(item, opts) {
             const span = document.createElement('span');
             span.className = 'mention-tag';
@@ -844,11 +1011,18 @@
             }
             span.dataset.type = item.type;
             span.dataset.value = item.value;
+            // Determine trigger based on type for consistency in buildMessageText
+            const trigger = item.type === 'contact' ? '@' : '#';
+            span.dataset.trigger = trigger;
+            
             const icon = document.createElement('span');
-            icon.className = 'codicon ' + (item.type === 'contact' ? 'codicon-account' : item.type === 'folder' ? 'codicon-folder' : 'codicon-file');
+            icon.className = 'codicon ' + (item.type === 'contact' ? 'codicon-account' : item.type === 'folder' ? 'codicon-folder' : item.type === 'image' ? 'codicon-file-media' : 'codicon-file');
+            
             const label = document.createElement('span');
             label.className = 'label';
-            label.textContent = '@' + item.label;
+            // Figure 1 shows @Builder but just database_provider.ts (no #)
+            label.textContent = (item.type === 'contact' ? '@' : '') + item.label;
+            
             span.appendChild(icon);
             span.appendChild(label);
             if (opts && opts.closable) {
@@ -873,13 +1047,37 @@
             });
             return span;
         }
-        function resolveMentionItem(val) {
-            const c = (allContacts || []).find(x => x.username === val);
-            if (c) return { type: 'contact', value: c.username, label: c.username, detail: c.ip };
-            const fldr = (foldersCache || []).find(x => x === val);
-            if (fldr) return { type: 'folder', value: fldr, label: fldr };
-            const file = (filesCache || []).find(x => x === val);
-            if (file) return { type: 'file', value: file, label: file };
+        function resolveMentionItem(val, trigger) {
+            // trigger hint helps disambiguate if needed
+            if (!trigger || trigger === '@') {
+                const c = (allContacts || []).find(x => x.username === val);
+                if (c) return { type: 'contact', value: c.username, label: c.username, detail: c.ip };
+            }
+            if (!trigger || trigger === '#') {
+                // val could be full path or basename?
+                // In renderMessageContent we extract name. 
+                // If the message raw text is #path/to/file.ts, then name is path/to/file.ts
+                // If it is #file.ts, name is file.ts
+                // Let's check filesCache for suffix match or full match
+                const fldr = (foldersCache || []).find(x => x === val || x.endsWith('/' + val));
+                if (fldr) return { type: 'folder', value: fldr, label: fldr.split('/').pop() };
+                const file = (filesCache || []).find(x => x === val || x.endsWith('/' + val));
+                if (file) return { type: 'file', value: file, label: file.split('/').pop() };
+                
+                // Fallback guessing for when cache is empty (recursive browse mode)
+                // Check if looks like image
+                if (/\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(val)) {
+                    return { type: 'image', value: val, label: val.split(/[\/\\]/).pop() };
+                }
+                if (val.includes('/') || val.includes('\\')) {
+                     const isFile = /\.[^/\\]+$/.test(val);
+                     return { type: isFile ? 'file' : 'folder', value: val, label: val.split(/[\/\\]/).pop() };
+                }
+                if (/\.[^/\\]+$/.test(val)) {
+                     return { type: 'file', value: val, label: val };
+                }
+            }
+            // Fallback
             return { type: 'mention', value: val, label: val };
         }
         function buildMessageText() {
@@ -891,7 +1089,8 @@
                     const el = node;
                     if (el.classList && el.classList.contains('mention-tag')) {
                         const v = el.dataset.value || '';
-                        s += '@' + v + ' ';
+                        const trigger = el.dataset.trigger || '@';
+                        s += trigger + v + ' ';
                     } else {
                         s += el.textContent;
                     }
