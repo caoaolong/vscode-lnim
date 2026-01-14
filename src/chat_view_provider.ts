@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
-import Peer from "peerjs";
+import Peer, { DataConnection } from "peerjs";
 
 interface UserSettings {
   nickname: string;
@@ -14,6 +14,7 @@ interface Contact {
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   private peer?: Peer;
+	private conn?: DataConnection;
 
   public static readonly viewType = "lnim.chatView";
 
@@ -40,6 +41,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.peer = new Peer(id, {
       debug: 3,
     });
+		this.peer.on("open", (id) => {
+			console.log(`Peer connection opened with ID: ${id}`);
+		});
+		this.peer.on("error", (err) => {
+			console.error("Peer error:", err);
+		});
+		this.peer.on("connection", (conn) => {
+			this.conn = conn;
+			console.log("New connection from:", conn.peer);
+			conn.on("data", (data) => {
+				console.log("Received data:", data);
+				// Handle incoming data
+			});
+		});
     console.log(`Peer initialized with ID: ${id}, `, this.peer);
   }
 
@@ -222,8 +237,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         }
         case "sendMessage": {
-          // 这里将来可以处理发送给其他 Peer 的逻辑
-          // 目前仅仅是回显（其实前端自己已经处理了回显，这里可以做服务端确认等）
+					this.conn?.send(data.message);
+					console.log("Sent message:", data.message);
           break;
         }
       }
