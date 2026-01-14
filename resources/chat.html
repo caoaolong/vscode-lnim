@@ -184,15 +184,14 @@
             gap: 0.35em;
             padding: 0 0.45em;
             margin: 0 0.2em;
-            height: 1.45em;
+            height: 1.2em;
             border-radius: 2px;
             background: transparent;
             border: 1px solid var(--vscode-widget-border);
             color: var(--vscode-foreground);
-            line-height: 1;
             user-select: none;
             cursor: pointer;
-            vertical-align: text-bottom;
+            vertical-align: middle;
             transform: translateY(-0.05em);
         }
         .mention-tag .codicon {
@@ -255,7 +254,8 @@
             font-size: 12px;
             font-weight: bold;
         }
-        .form-group input {
+        .form-group input,
+        .form-group select {
             width: 100%;
             padding: 6px;
             background-color: var(--vscode-input-background);
@@ -347,17 +347,31 @@
             background: var(--vscode-sideBar-background);
             text-align: left;
         }
-        .danger-btn {
+        .text-btn {
             background: none;
             border: none;
             padding: 0;
             cursor: pointer;
             color: var(--vscode-textLink-foreground);
             font-size: 12px;
+            margin-right: 8px;
         }
-        .danger-btn:hover {
+        .text-btn:hover {
             text-decoration: underline;
             color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
+        }
+        .status-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-left: 6px;
+        }
+        .status-dot.online {
+            background-color: #4CAF50; /* Green */
+        }
+        .status-dot.offline {
+            background-color: #9E9E9E; /* Grey */
         }
     </style>
 </head>
@@ -378,16 +392,16 @@
         <div id="contacts-panel">
             <h3>联系人</h3>
             <div id="contact-form">
-                <input type="text" id="contact-ip" placeholder="IP 地址">
+                <input type="text" id="contact-ip" placeholder="主机地址 (IP:端口)">
                 <input type="text" id="contact-username" placeholder="用户名">
                 <button id="add-contact-btn">添加</button>
             </div>
             <table class="contacts">
                 <thead>
                     <tr>
-                        <th>IP 地址</th>
+                        <th>主机地址</th>
                         <th>用户名</th>
-                        <th style="width:80px;">操作</th>
+                        <th>操作</th>
                     </tr>
                 </thead>
                 <tbody id="contacts-tbody"></tbody>
@@ -416,7 +430,11 @@
             </div>
             <div class="form-group">
                 <label for="ip-address">IP Address</label>
-                <input type="text" id="ip-address" placeholder="Enter IP address">
+                <select id="ip-address"></select>
+            </div>
+            <div class="form-group">
+                <label for="port">Port</label>
+                <input type="number" id="port" min="1" max="65535" placeholder="18080">
             </div>
             <div class="button-group">
                 <button id="cancel-btn">Cancel</button>
@@ -432,6 +450,7 @@
         const settingsOverlay = document.getElementById('settings-overlay');
         const nicknameInput = document.getElementById('nickname');
         const ipInput = document.getElementById('ip-address');
+        const portInput = document.getElementById('port');
         const contactsOverlay = document.getElementById('contacts-overlay');
         const contactIpInput = document.getElementById('contact-ip');
         const contactUsernameInput = document.getElementById('contact-username');
@@ -441,7 +460,8 @@
 
         let currentUserSettings = {
             nickname: 'User',
-            ip: ''
+            ip: '',
+            port: 18080
         };
         let lastMessageTime = 0;
         let contacts = [];
@@ -456,6 +476,9 @@
         let contextMenuTarget = null;
         let currentBrowsePath = '';
         let directoryItems = [];
+        let contactStatusMap = {};
+        let contactsStatusRequested = false;
+        let localIps = [];
 
         // --- Event Listeners ---
 
@@ -632,15 +655,22 @@
         }
 
         document.getElementById('settings-btn').addEventListener('click', () => {
-            // Fill inputs with current settings
             nicknameInput.value = currentUserSettings.nickname;
-            ipInput.value = currentUserSettings.ip;
+            const port = currentUserSettings.port && currentUserSettings.port > 0 && currentUserSettings.port <= 65535
+                ? currentUserSettings.port
+                : 18080;
+            if (portInput) {
+                portInput.value = String(port);
+            }
+            updateIpSelectOptions();
             settingsOverlay.style.display = 'flex';
         });
         document.getElementById('contacts-btn').addEventListener('click', () => {
             contactIpInput.value = '';
             contactUsernameInput.value = '';
             contactsOverlay.style.display = 'flex';
+            contactStatusMap = {};
+            contactsStatusRequested = false;
             vscode.postMessage({ type: 'getContacts' });
         });
 
@@ -649,20 +679,42 @@
         });
 
         document.getElementById('save-btn').addEventListener('click', () => {
+            let port = 18080;
+            if (portInput) {
+                const v = portInput.value.trim();
+                if (v) {
+                    const n = parseInt(v, 10);
+                    if (n > 0 && n <= 65535) {
+                        port = n;
+                    }
+                }
+            }
             const newSettings = {
                 nickname: nicknameInput.value.trim() || 'User',
-                ip: ipInput.value.trim()
+                ip: ipInput.value.trim(),
+                port
             };
             vscode.postMessage({ type: 'saveSettings', settings: newSettings });
-            // Optimistically update local settings
             currentUserSettings = newSettings;
             settingsOverlay.style.display = 'none';
         });
         document.getElementById('add-contact-btn').addEventListener('click', () => {
-            const ip = contactIpInput.value.trim();
+            const host = contactIpInput.value.trim();
             const username = contactUsernameInput.value.trim();
-            if (!ip || !username) return;
-            vscode.postMessage({ type: 'addContact', contact: { ip, username }});
+            if (!host || !username) return;
+            const parts = host.split(':');
+            if (parts.length !== 2) {
+                window.alert('主机地址格式必须为 IP:端口');
+                return;
+            }
+            const ip = parts[0].trim();
+            const portStr = parts[1].trim();
+            const port = parseInt(portStr, 10);
+            if (!ip || !portStr || isNaN(port) || port <= 0 || port > 65535) {
+                window.alert('主机地址格式必须为 IP:有效端口(1-65535)');
+                return;
+            }
+            vscode.postMessage({ type: 'addContact', contact: { ip, port, username }});
             contactIpInput.value = '';
             contactUsernameInput.value = '';
         });
@@ -678,16 +730,30 @@
                 case 'settingsSaved':
                     currentUserSettings = message.settings;
                     break;
+                case 'localIps':
+                    localIps = Array.isArray(message.ips) ? message.ips : [];
+                    updateIpSelectOptions();
+                    break;
                 case 'updateContacts':
                     contacts = message.contacts || [];
                     allContacts = contacts.slice();
                     if (mentionActive) filterMention();
+                    contactsStatusRequested = false;
                     renderContacts();
                     break;
                 case 'contactsSaved':
                     contacts = message.contacts || [];
                     allContacts = contacts.slice();
                     if (mentionActive) filterMention();
+                    contactsStatusRequested = false;
+                    renderContacts();
+                    break;
+                case 'contactsStatus':
+                    contactStatusMap = {};
+                    (message.statuses || []).forEach(s => {
+                        const key = (s.ip || '') + '|' + (s.username || '');
+                        contactStatusMap[key] = s.online ? 'online' : 'offline';
+                    });
                     renderContacts();
                     break;
                 case 'filesAndFolders':
@@ -727,7 +793,19 @@
                         });
                     }
                     break;
-                // Handle other messages like 'receiveMessage' in future
+                case 'receiveMessage':
+                    const sender = message.from || {};
+                    // Avoid displaying own messages if they are echoed back
+                    if (sender.nickname === currentUserSettings.nickname) {
+                        return;
+                    }
+                    addMessage({
+                        text: message.message,
+                        isSelf: false,
+                        nickname: sender.nickname || 'Unknown',
+                        timestamp: message.timestamp
+                    });
+                    break;
             }
         });
 
@@ -1122,29 +1200,100 @@
             contactsTbody.innerHTML = '';
             contacts.forEach((c) => {
                 const tr = document.createElement('tr');
-                const tdIp = document.createElement('td');
+                const tdHost = document.createElement('td');
                 const tdUser = document.createElement('td');
                 const tdOps = document.createElement('td');
-                tdIp.textContent = c.ip;
-                tdUser.textContent = c.username;
+                const portText = c.port && c.port > 0 && c.port <= 65535 ? String(c.port) : '';
+                tdHost.textContent = c.ip ? (portText ? (c.ip + ':' + portText) : c.ip) : '';
+                
+                // Username + Status Dot
+                const nameSpan = document.createElement('span');
+                nameSpan.textContent = c.username;
+                tdUser.appendChild(nameSpan);
+
+                const key = (c.ip || '') + '|' + String(c.port || '') + '|' + (c.username || '');
+                const status = contactStatusMap[key];
+                
+                if (status === 'online' || status === 'offline') {
+                    const dot = document.createElement('span');
+                    dot.className = 'status-dot ' + status;
+                    dot.title = status === 'online' ? '在线' : '离线';
+                    tdUser.appendChild(dot);
+                }
+
+                const checkBtn = document.createElement('button');
+                checkBtn.className = 'text-btn';
+                checkBtn.textContent = '检测';
+                checkBtn.addEventListener('click', () => {
+                    vscode.postMessage({ type: 'checkContactLink', contact: c });
+                });
                 const delBtn = document.createElement('button');
-                delBtn.className = 'danger-btn';
+                delBtn.className = 'text-btn';
                 delBtn.textContent = '删除';
                 delBtn.addEventListener('click', () => {
                     vscode.postMessage({ type: 'deleteContact', contact: c });
                 });
+                tdOps.appendChild(checkBtn);
                 tdOps.appendChild(delBtn);
-                tr.appendChild(tdIp);
+                tr.appendChild(tdHost);
                 tr.appendChild(tdUser);
                 tr.appendChild(tdOps);
                 contactsTbody.appendChild(tr);
             });
+            if (contactsOverlay.style.display === 'flex' && !contactsStatusRequested && contacts.length > 0) {
+                contactsStatusRequested = true;
+                requestContactsOnlineStatus(contacts);
+            }
+        }
+        function updateIpSelectOptions() {
+            if (!ipInput) {
+                return;
+            }
+            const current = (currentUserSettings && currentUserSettings.ip) || ipInput.value || '';
+            ipInput.innerHTML = '';
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = localIps.length ? '请选择本机 IP 地址' : '无可用 IP 地址';
+            ipInput.appendChild(placeholder);
+            localIps.forEach((addr) => {
+                const opt = document.createElement('option');
+                opt.value = addr;
+                opt.textContent = addr;
+                ipInput.appendChild(opt);
+            });
+            if (current) {
+                let found = false;
+                for (let i = 0; i < ipInput.options.length; i++) {
+                    if (ipInput.options[i].value === current) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    const opt = document.createElement('option');
+                    opt.value = current;
+                    opt.textContent = current;
+                    ipInput.appendChild(opt);
+                }
+                ipInput.value = current;
+            } else {
+                ipInput.value = '';
+            }
+        }
+        function requestContactsOnlineStatus(list) {
+            const payload = list.map(c => ({
+                ip: c.ip,
+                port: c.port,
+                username: c.username
+            }));
+            vscode.postMessage({ type: 'getContactsStatus', contacts: payload });
         }
 
         // --- Initialization ---
         
         // Request initial settings
         vscode.postMessage({ type: 'getSettings' });
+        vscode.postMessage({ type: 'getLocalIps' });
 
     </script>
 </body>
