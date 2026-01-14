@@ -1,25 +1,23 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
-import * as dgram from "dgram";
 import * as os from "os";
-import { LinkMessage } from "./lnim_message";
+import {
+  ChatMessageService,
+  ChatContact as MessageContact,
+  ChatUserSettings as MessageUserSettings,
+  DiscoveredPeer,
+} from "./chat_message_service";
+import {
+  ChatDataStore,
+  StoredContact,
+  StoredUserSettings,
+} from "./chat_data_store";
 
-interface UserSettings {
-  nickname: string;
-  ip: string;
-  port: number;
-}
-interface Contact {
-  ip: string;
-  port?: number;
-  username: string;
-  status?: boolean;
-}
+type UserSettings = StoredUserSettings;
+type Contact = StoredContact;
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
-  private udpServer?: dgram.Socket;
-
   public static readonly viewType = "lnim.chatView";
   private static readonly DEFAULT_PORT = 18080;
 
@@ -27,29 +25,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _userSettings: UserSettings;
   private _contacts: Contact[];
   private _currentPort: number;
+  private readonly _store: ChatDataStore;
+  private readonly _messageService: ChatMessageService;
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
     private readonly _context: vscode.ExtensionContext
   ) {
-    this._userSettings = this._context.globalState.get<UserSettings>(
-      "userSettings",
-      {
-        nickname: "User",
-        ip: "",
-        port: ChatViewProvider.DEFAULT_PORT,
-      }
-    );
-    if (
-      !this._userSettings.port ||
-      this._userSettings.port <= 0 ||
-      this._userSettings.port > 65535
-    ) {
-      this._userSettings.port = ChatViewProvider.DEFAULT_PORT;
-    }
-    this._currentPort = this._userSettings.port;
-    this._contacts = this._context.globalState.get<Contact[]>("contacts", []);
-    this.startUdpServer();
+    this._store = new ChatDataStore(this._context);
+    this._userSettings = this._store.getUserSettings();
+    this._contacts = this._store.getContacts();
+    this._currentPort = this._userSettings.port || ChatViewProvider.DEFAULT_PORT;
+    this._messageService = new ChatMessageService(this._currentPort, {
+      view: this._view,
+      defaultPort: ChatViewProvider.DEFAULT_PORT,
+      getSelfId: () => this.id(),
+    });
   }
 
   public id(): string {
@@ -63,6 +54,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     _token: vscode.CancellationToken
   ) {
     this._view = webviewView;
+    this._messageService.attachView(webviewView);
 
     webviewView.webview.options = {
       // Allow scripts in the webview
@@ -77,21 +69,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       switch (data.type) {
         case "saveSettings": {
           const incoming = data.settings as UserSettings;
-          let port = incoming.port;
-          if (!port || port <= 0 || port > 65535) {
-            port = ChatViewProvider.DEFAULT_PORT;
-          }
-          this._userSettings = {
-            nickname: incoming.nickname || "User",
-            ip: incoming.ip || "",
-            port,
-          };
-          await this._context.globalState.update(
-            "userSettings",
-            this._userSettings
-          );
-          if (port !== this._currentPort) {
-            this.restartUdpServer(port);
+          const updated = await this._store.updateUserSettings(incoming);
+          this._userSettings = updated;
+          if (updated.port !== this._currentPort) {
+            this._currentPort = updated.port;
+            this._messageService.restart(this._currentPort);
           }
           webviewView.webview.postMessage({
             type: "settingsSaved",
@@ -115,9 +97,50 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         }
         case "getContacts": {
-          console.log(this._contacts);
           webviewView.webview.postMessage({
             type: "updateContacts",
+            contacts: this._contacts,
+          });
+          break;
+        }
+        case "scanContacts": {
+          const baseIp = this._userSettings.ip;
+          if (!baseIp) {
+            vscode.window.showErrorMessage("请先在设置中配置本机 IP 地址");
+            break;
+          }
+          const bits =
+            typeof data.maskBits === "number" && data.maskBits >= 0 && data.maskBits <= 32
+              ? data.maskBits
+              : 24;
+          vscode.window.setStatusBarMessage(
+            `正在扫描 ${baseIp}/${bits} ...`,
+            1500
+          );
+          const peers: DiscoveredPeer[] =
+            await this._messageService.scanSubnet(bits, baseIp);
+          if (!peers || peers.length === 0) {
+            vscode.window.showInformationMessage("当前网段未发现在线 LNIM 客户端");
+            break;
+          }
+          for (const p of peers) {
+            let nickname = p.id;
+            try {
+              const decoded = Buffer.from(p.id, "base64").toString("utf8");
+              const parts = decoded.split(":");
+              if (parts.length > 0 && parts[0]) {
+                nickname = parts[0];
+              }
+            } catch {}
+            const contact: Contact = {
+              ip: p.ip,
+              port: p.port,
+              username: nickname,
+            };
+            this._contacts = await this._store.addContact(contact);
+          }
+          webviewView.webview.postMessage({
+            type: "contactsSaved",
             contacts: this._contacts,
           });
           break;
@@ -128,7 +151,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             : this._contacts;
           const statuses = await Promise.all(
             reqList.map(async (c) => {
-              const online = await this.checkContactOnline(c);
+              const online = await this._messageService.checkContactOnline(c);
               return {
                 ip: c.ip,
                 port: c.port,
@@ -145,22 +168,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         case "addContact": {
           const c: Contact = data.contact;
-          if (c?.ip && c?.username) {
-            const exists = this._contacts.some(
-              (x) =>
-                x.ip === c.ip &&
-                (x.port || ChatViewProvider.DEFAULT_PORT) ===
-                  (c.port || ChatViewProvider.DEFAULT_PORT) &&
-                x.username === c.username
-            );
-            if (!exists) {
-              this._contacts.push(c);
-              await this._context.globalState.update(
-                "contacts",
-                this._contacts
-              );
-            }
-          }
+          this._contacts = await this._store.addContact(c);
           webviewView.webview.postMessage({
             type: "contactsSaved",
             contacts: this._contacts,
@@ -169,47 +177,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         case "checkContactLink": {
           const c: Contact = data.contact;
-          if (!c || !c.ip || !this.udpServer) {
-            vscode.window.showErrorMessage("无法发送 LinkMessage：目标或本地 UDP 服务无效");
-            break;
-          }
-          const targetPort =
-            c.port && c.port > 0 && c.port <= 65535
-              ? c.port
-              : ChatViewProvider.DEFAULT_PORT;
-          const payload: LinkMessage = {
-            type: "link",
-            from: this.id(),
-          };
-          const buf = Buffer.from(JSON.stringify(payload), "utf8");
-          this.udpServer.send(buf, targetPort, c.ip, (err) => {
-            if (err) {
-              console.error("Failed to send LinkMessage:", err);
-              vscode.window.showErrorMessage(
-                `向 ${c.username}(${c.ip}:${targetPort}) 发送 LinkMessage 失败：${String(
-                  err
-                )}`
-              );
-            } else {
-              vscode.window.showInformationMessage(
-                `已向 ${c.username}(${c.ip}:${targetPort}) 发送 LinkMessage`
-              );
-            }
-          });
+          this._messageService.sendLinkMessage(c, this.id());
           break;
         }
         case "deleteContact": {
           const c: Contact = data.contact;
-          this._contacts = this._contacts.filter(
-            (x) =>
-              !(
-                x.ip === c?.ip &&
-                (x.port || ChatViewProvider.DEFAULT_PORT) ===
-                  (c.port || ChatViewProvider.DEFAULT_PORT) &&
-                x.username === c?.username
-              )
-          );
-          await this._context.globalState.update("contacts", this._contacts);
+          this._contacts = await this._store.deleteContact(c);
           webviewView.webview.postMessage({
             type: "contactsSaved",
             contacts: this._contacts,
@@ -336,59 +309,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  private startUdpServer(port?: number) {
-    try {
-      const targetPort =
-        port ||
-        this._currentPort ||
-        this._userSettings.port ||
-        ChatViewProvider.DEFAULT_PORT;
-      this.udpServer = dgram.createSocket("udp4");
-      this.udpServer.on("message", (data, rinfo) => {
-        try {
-          const text = data.toString();
-          const payload = JSON.parse(text);
-          if (payload && payload.type === "ping") {
-            const buf = Buffer.from(JSON.stringify({ type: "pong" }), "utf8");
-            this.udpServer?.send(buf, rinfo.port, rinfo.address);
-            return;
-          }
-          if (payload && payload.type === "chat") {
-            const from = payload.from;
-            const message = payload.message;
-            console.log(
-              "Received message:",
-              message,
-              "from:",
-              from.nickname || from
-            );
-            if (this._view) {
-              this._view.webview.postMessage({
-                type: "receiveMessage",
-                from,
-                message,
-                timestamp: Date.now(),
-              });
-            }
-          }
-        } catch (e) {
-          console.error("Failed to handle incoming UDP message:", e);
-        }
-      });
-      this.udpServer.on("error", (err) => {
-        console.error("UDP server error:", err);
-        vscode.window.showErrorMessage(`UDP 服务异常：${String(err)}`);
-      });
-      this.udpServer.bind(targetPort, () => {
-        this._currentPort = targetPort;
-        console.log(`UDP server listening on port ${targetPort}`);
-      });
-    } catch (e) {
-      console.error("Failed to start UDP server:", e);
-      vscode.window.showErrorMessage("无法启动 UDP 服务");
-    }
-  }
-
   private handleSendMessage(data: any) {
     const msg = (data && (data.value ?? data.message)) || "";
     const contacts = this.extractContactsFromMessage(msg);
@@ -398,95 +318,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       );
       return;
     }
-    const payload = JSON.stringify({
-      type: "chat",
-      from: this._userSettings,
-      message: msg,
-    });
-    const buf = Buffer.from(payload, "utf8");
-    if (!this.udpServer) {
-      vscode.window.showErrorMessage("UDP 服务未启动，无法发送消息");
-      return;
-    }
-    for (const c of contacts) {
-      const targetPort =
-        c.port && c.port > 0 && c.port <= 65535
-          ? c.port
-          : ChatViewProvider.DEFAULT_PORT;
-      this.udpServer.send(buf, targetPort, c.ip, (err) => {
-        if (err) {
-          console.error("Failed to send UDP message:", err);
-          vscode.window.showErrorMessage(
-            `向 ${c.username}(${c.ip}) 发送消息失败：${String(err)}`
-          );
-        }
-      });
-    }
-    console.log(
-      "Sent message:",
+    this._messageService.sendChatMessage(
       msg,
-      "contacts:",
-      contacts.map((c) => `${c.username}(${c.ip})`)
+      this._userSettings as MessageUserSettings,
+      contacts as MessageContact[]
     );
-  }
-
-  private async checkContactOnline(contact: Contact): Promise<boolean> {
-    if (!contact || !contact.ip) {
-      return false;
-    }
-    return new Promise<boolean>((resolve) => {
-      let resolved = false;
-      const socket = dgram.createSocket("udp4");
-      const timeout = setTimeout(() => {
-        if (resolved) {
-          return;
-        }
-        resolved = true;
-        socket.close();
-        resolve(false);
-      }, 1500);
-      try {
-        socket.on("message", () => {
-          if (resolved) {
-            return;
-          }
-          resolved = true;
-          clearTimeout(timeout);
-          socket.close();
-          resolve(true);
-        });
-        socket.on("error", () => {
-          if (resolved) {
-            return;
-          }
-          resolved = true;
-          clearTimeout(timeout);
-          socket.close();
-          resolve(false);
-        });
-        socket.bind(0, () => {
-          const payload = JSON.stringify({ type: "ping" });
-          const buf = Buffer.from(payload, "utf8");
-          const targetPort =
-            contact.port && contact.port > 0 && contact.port <= 65535
-              ? contact.port
-              : ChatViewProvider.DEFAULT_PORT;
-          socket.send(buf, targetPort, contact.ip, (err) => {
-            if (err && !resolved) {
-              resolved = true;
-              clearTimeout(timeout);
-              socket.close();
-              resolve(false);
-            }
-          });
-        });
-      } catch (e) {
-        clearTimeout(timeout);
-        socket.close();
-        resolve(false);
-        return;
-      }
-    });
   }
 
   private extractContactsFromMessage(text: string): Contact[] {
@@ -532,17 +368,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     }
     return result;
-  }
-
-  private restartUdpServer(port: number) {
-    if (this.udpServer) {
-      try {
-        this.udpServer.close();
-      } catch {}
-      this.udpServer = undefined;
-    }
-    this._currentPort = port;
-    this.startUdpServer(port);
   }
 
   private _getHtmlForWebview(webview: vscode.Webview) {

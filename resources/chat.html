@@ -38,6 +38,10 @@
             background: none;
             border: none;
             padding: 2px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
         .icon-btn:hover {
             color: var(--vscode-foreground);
@@ -311,6 +315,10 @@
             font-size: 14px;
             border-bottom: 1px solid var(--vscode-widget-border);
             padding-bottom: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            line-height: 24px;
         }
         #contact-form {
             display: grid;
@@ -390,11 +398,23 @@
 
     <div id="contacts-overlay">
         <div id="contacts-panel">
-            <h3>联系人</h3>
+            <h3>
+                <span>联系人</span>
+                <div style="display:flex;align-items:center;gap:6px;">
+                    <button class="icon-btn" id="scan-contacts-btn" title="扫描局域网联系人">
+                        <span class="codicon codicon-search"></span>
+                    </button>
+                    <button class="icon-btn" id="close-contacts-btn" title="关闭">
+                        <span class="codicon codicon-close"></span>
+                    </button>
+                </div>
+            </h3>
             <div id="contact-form">
                 <input type="text" id="contact-ip" placeholder="主机地址 (IP:端口)">
                 <input type="text" id="contact-username" placeholder="用户名">
-                <button id="add-contact-btn">添加</button>
+                <button id="add-contact-btn">
+									<span class="codicon codicon-add"></span>
+								</button>
             </div>
             <table class="contacts">
                 <thead>
@@ -437,8 +457,8 @@
                 <input type="number" id="port" min="1" max="65535" placeholder="18080">
             </div>
             <div class="button-group">
-                <button id="cancel-btn">Cancel</button>
-                <button id="save-btn">Save</button>
+                <button id="cancel-btn">取消</button>
+                <button id="save-btn">保存</button>
             </div>
         </div>
     </div>
@@ -457,6 +477,8 @@
         const contactsTbody = document.getElementById('contacts-tbody');
         const mentionSuggest = document.getElementById('mention-suggest');
         const imageBtn = document.getElementById('image-btn');
+        const scanContactsBtn = document.getElementById('scan-contacts-btn');
+        const closeContactsBtn = document.getElementById('close-contacts-btn');
 
         let currentUserSettings = {
             nickname: 'User',
@@ -481,6 +503,20 @@
         let localIps = [];
 
         // --- Event Listeners ---
+
+        if (scanContactsBtn) {
+            scanContactsBtn.addEventListener('click', () => {
+                vscode.postMessage({
+                    type: 'scanContacts'
+                });
+            });
+        }
+
+        if (closeContactsBtn) {
+            closeContactsBtn.addEventListener('click', () => {
+                contactsOverlay.style.display = 'none';
+            });
+        }
 
         input.addEventListener('keydown', (e) => {
             if (mentionActive) {
@@ -795,10 +831,6 @@
                     break;
                 case 'receiveMessage':
                     const sender = message.from || {};
-                    // Avoid displaying own messages if they are echoed back
-                    if (sender.nickname === currentUserSettings.nickname) {
-                        return;
-                    }
                     addMessage({
                         text: message.message,
                         isSelf: false,
