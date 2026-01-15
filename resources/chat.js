@@ -38,8 +38,14 @@ let localIps = [];
 // --- Event Listeners ---
 
 $scanContactsBtn.on('click', () => {
+    const targetHost = $contactIpInput.val().trim();
+    if (!targetHost) {
+        window.alert('请输入主机地址 (IP:端口)');
+        return;
+    }
     vscode.postMessage({
-        type: 'scanContacts'
+        type: 'scanContacts',
+        targetHost: targetHost
     });
 });
 
@@ -257,24 +263,6 @@ $('#save-btn').on('click', () => {
     vscode.postMessage({ type: 'saveSettings', settings: newSettings });
     currentUserSettings = newSettings;
     $settingsOverlay.hide();
-});
-$('#add-contact-btn').on('click', () => {
-    const host = $contactIpInput.val().trim();
-    if (!host) return;
-    const parts = host.split(':');
-    if (parts.length !== 2) {
-        window.alert('主机地址格式必须为 IP:端口');
-        return;
-    }
-    const ip = parts[0].trim();
-    const portStr = parts[1].trim();
-    const port = parseInt(portStr, 10);
-    if (!ip || !portStr || isNaN(port) || port <= 0 || port > 65535) {
-        window.alert('主机地址格式必须为 IP:有效端口(1-65535)');
-        return;
-    }
-    vscode.postMessage({ type: 'addContact', contact: { ip, port, username: '' }});
-    $contactIpInput.val('');
 });
 
 // --- Message Handling ---

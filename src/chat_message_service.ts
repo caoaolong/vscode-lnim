@@ -51,6 +51,12 @@ export interface ChatMessageServiceOptions {
   view?: vscode.WebviewView;
   defaultPort: number;
   getSelfId?: () => string;
+  onScanContactResult?: (result: {
+    ip: string;
+    port: number;
+    id?: string;
+    online: boolean;
+  }) => void;
 }
 
 export class ChatMessageService {
@@ -59,9 +65,19 @@ export class ChatMessageService {
   private readonly defaultPort: number;
   private view?: vscode.WebviewView;
   private readonly getSelfId?: () => string;
+  private readonly onScanContactResult?: (result: {
+    ip: string;
+    port: number;
+    id?: string;
+    online: boolean;
+  }) => void;
   private readonly pendingLinkChecks = new Map<
     string,
     { resolve: (online: boolean) => void; timeout: NodeJS.Timeout }
+  >();
+  private readonly pendingScanContacts = new Map<
+    string,
+    { timeout: NodeJS.Timeout }
   >();
   private currentScan?:
     | {
@@ -74,6 +90,7 @@ export class ChatMessageService {
     this.defaultPort = options.defaultPort;
     this.view = options.view;
     this.getSelfId = options.getSelfId;
+    this.onScanContactResult = options.onScanContactResult;
     this.startUdpServer(this.currentPort);
   }
 
@@ -165,6 +182,60 @@ export class ChatMessageService {
           console.error("Failed to send online-check LinkMessage:", err);
         }
       });
+    });
+  }
+
+  public sendScanContactMessage(contact: ChatContact) {
+    if (!contact || !contact.ip || !this.udpServer) {
+      return;
+    }
+    const targetPort =
+      contact.port && contact.port > 0 && contact.port <= 65535
+        ? contact.port
+        : this.defaultPort;
+    const key = `${contact.ip}:${targetPort}`;
+
+    // 如果已有待处理的扫描请求，先清除
+    const existing = this.pendingScanContacts.get(key);
+    if (existing) {
+      clearTimeout(existing.timeout);
+      this.pendingScanContacts.delete(key);
+    }
+
+    // 设置超时，如果1秒内没收到回复，通知失败
+    const timeout = setTimeout(() => {
+      this.pendingScanContacts.delete(key);
+      if (this.onScanContactResult) {
+        this.onScanContactResult({
+          ip: contact.ip,
+          port: targetPort,
+          online: false,
+        });
+      }
+    }, 1000);
+
+    this.pendingScanContacts.set(key, { timeout });
+
+    // 发送 LinkMessage
+    const fromId = this.getSelfId ? this.getSelfId() : "";
+    const payload: LinkMessage = {
+      type: "link",
+      from: fromId,
+    };
+    const buf = Buffer.from(JSON.stringify(payload), "utf8");
+    this.udpServer.send(buf, targetPort, contact.ip, (err) => {
+      if (err) {
+        console.error("Failed to send scan LinkMessage:", err);
+        clearTimeout(timeout);
+        this.pendingScanContacts.delete(key);
+        if (this.onScanContactResult) {
+          this.onScanContactResult({
+            ip: contact.ip,
+            port: targetPort,
+            online: false,
+          });
+        }
+      }
     });
   }
 
@@ -283,66 +354,17 @@ export class ChatMessageService {
           }
 
           if (payload && payload.type === "link") {
-            const key = `${rinfo.address}:${rinfo.port}`;
-            const pending = this.pendingLinkChecks.get(key);
-            if (pending) {
-              this.pendingLinkChecks.delete(key);
-              clearTimeout(pending.timeout);
-              pending.resolve(true);
-            }
-            const isReply = !!payload.reply;
-            if (!isReply && this.getSelfId) {
-              const myId = this.getSelfId();
-              const replyPayload: LinkMessage = {
-                type: "link",
-                from: myId,
-                reply: true,
-              };
-              const replyBuf = Buffer.from(
-                JSON.stringify(replyPayload),
-                "utf8"
-              );
-              this.udpServer?.send(replyBuf, rinfo.port, rinfo.address, (err) => {
-                if (err) {
-                  console.error("Failed to send LinkMessage reply:", err);
-                }
-              });
-            }
-            if (this.currentScan && isReply && typeof payload.from === "string") {
-              const scanKey = `${rinfo.address}:${rinfo.port}`;
-              if (!this.currentScan.results.has(scanKey)) {
-                this.currentScan.results.set(scanKey, {
-                  ip: rinfo.address,
-                  port: rinfo.port,
-                  id: payload.from,
-                });
-              }
-            }
+            this.handleLinkMessage(payload, rinfo);
             return;
           }
 
           if (payload && payload.type === "ping") {
-            const buf = Buffer.from(JSON.stringify({ type: "pong" }), "utf8");
-            this.udpServer?.send(buf, rinfo.port, rinfo.address);
+            this.handlePingMessage(rinfo);
             return;
           }
           if (payload && payload.type === "chat") {
-            const from = payload.from;
-            const message = payload.message;
-            console.log(
-              "Received message:",
-              message,
-              "from:",
-              from.nickname || from
-            );
-            if (this.view) {
-              this.view.webview.postMessage({
-                type: "receiveMessage",
-                from,
-                message,
-                timestamp: Date.now(),
-              });
-            }
+            this.handleChatMessage(payload);
+            return;
           }
         } catch (e) {
           console.error("Failed to handle incoming UDP message:", e);
@@ -359,6 +381,86 @@ export class ChatMessageService {
     } catch (e) {
       console.error("Failed to start UDP server:", e);
       vscode.window.showErrorMessage("无法启动 UDP 服务");
+    }
+  }
+
+  private handleLinkMessage(payload: any, rinfo: dgram.RemoteInfo) {
+    const key = `${rinfo.address}:${rinfo.port}`;
+    const isReply = !!payload.reply;
+
+    // 处理待处理的在线检测请求
+    const pending = this.pendingLinkChecks.get(key);
+    if (pending) {
+      this.pendingLinkChecks.delete(key);
+      clearTimeout(pending.timeout);
+      pending.resolve(true);
+    }
+
+    // 处理待处理的扫描联系人请求
+    const pendingScan = this.pendingScanContacts.get(key);
+    if (pendingScan && isReply && typeof payload.from === "string") {
+      this.pendingScanContacts.delete(key);
+      clearTimeout(pendingScan.timeout);
+      if (this.onScanContactResult) {
+        this.onScanContactResult({
+          ip: rinfo.address,
+          port: rinfo.port,
+          id: payload.from,
+          online: true,
+        });
+      }
+    }
+
+    // 如果是收到的 LinkMessage（非回复），自动回复
+    if (!isReply && this.getSelfId) {
+      const myId = this.getSelfId();
+      const replyPayload: LinkMessage = {
+        type: "link",
+        from: myId,
+        reply: true,
+      };
+      const replyBuf = Buffer.from(JSON.stringify(replyPayload), "utf8");
+      this.udpServer?.send(replyBuf, rinfo.port, rinfo.address, (err) => {
+        if (err) {
+          console.error("Failed to send LinkMessage reply:", err);
+        }
+      });
+    }
+
+    // 处理子网扫描结果
+    if (this.currentScan && isReply && typeof payload.from === "string") {
+      const scanKey = `${rinfo.address}:${rinfo.port}`;
+      if (!this.currentScan.results.has(scanKey)) {
+        this.currentScan.results.set(scanKey, {
+          ip: rinfo.address,
+          port: rinfo.port,
+          id: payload.from,
+        });
+      }
+    }
+  }
+
+  private handlePingMessage(rinfo: dgram.RemoteInfo) {
+    const buf = Buffer.from(JSON.stringify({ type: "pong" }), "utf8");
+    this.udpServer?.send(buf, rinfo.port, rinfo.address);
+  }
+
+  private handleChatMessage(payload: any) {
+    const from = payload.from;
+    const message = payload.message;
+    console.log(
+      "Received message:",
+      message,
+      "from:",
+      from.nickname || from
+    );
+    if (this.view) {
+      this.view.webview.postMessage({
+        type: "receiveMessage",
+        from,
+        message,
+        timestamp: Date.now(),
+      });
     }
   }
 }

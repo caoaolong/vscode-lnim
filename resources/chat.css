@@ -176,46 +176,137 @@ body {
 .mention-tag {
     display: inline-flex;
     align-items: center;
-    gap: 0.35em;
-    padding: 0 0.45em;
+    gap: 0.4em;
+    padding: 0.2em 0.6em;
     margin: 0 0.2em;
-    height: 1.2em;
-    border-radius: 2px;
-    background: transparent;
-    border: 1px solid var(--vscode-widget-border);
+    height: 1.5em;
+    border-radius: 6px;
+    background: var(--vscode-badge-background, rgba(128, 128, 128, 0.3));
+    border: 1.5px solid transparent;
     color: var(--vscode-foreground);
     user-select: none;
     cursor: pointer;
     vertical-align: middle;
     transform: translateY(-0.05em);
+    font-weight: 600;
+    font-size: 0.9em;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+    transition: all 0.2s ease;
+}
+.mention-tag:hover {
+    transform: translateY(-0.05em) scale(1.02);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
 }
 .mention-tag .codicon {
     font-size: 0.9em;
-    color: var(--vscode-icon-foreground);
     line-height: 1;
+    font-weight: 600;
 }
 .mention-tag .label {
-    font-size: 1em;
-    line-height: 1;
+    font-size: 0.9em;
+    line-height: 1.3;
     display: inline-block;
+    font-weight: 600;
+    letter-spacing: 0.02em;
 }
 .mention-tag .close {
     cursor: pointer;
     color: var(--vscode-descriptionForeground);
     line-height: 1;
     align-self: center;
+    opacity: 0.8;
+    margin-left: 0.3em;
+    font-size: 0.85em;
 }
 .mention-tag .close:hover {
     color: var(--vscode-errorForeground);
+    opacity: 1;
 }
-.mention-tag[data-type="contact"] { border-color: var(--vscode-charts-green, #89d185); color: var(--vscode-charts-green, #89d185); }
-.mention-tag[data-type="folder"] { border-color: var(--vscode-charts-yellow, #cca700); color: var(--vscode-charts-yellow, #cca700); }
-.mention-tag[data-type="file"] { border-color: var(--vscode-charts-blue, #3794ff); color: var(--vscode-charts-blue, #3794ff); }
-.mention-tag[data-type="image"] { border-color: var(--vscode-charts-purple, #b180d7); color: var(--vscode-charts-purple, #b180d7); }
-.mention-tag[data-type="contact"] .codicon { color: inherit; }
-.mention-tag[data-type="folder"] .codicon { color: inherit; }
-.mention-tag[data-type="file"] .codicon { color: inherit; }
-.mention-tag[data-type="image"] .codicon { color: inherit; }
+/* Contact tag - 绿色主题，使用实色背景提高对比度 */
+.mention-tag[data-type="contact"] {
+    background: var(--vscode-charts-green, #4a9e4a);
+    border-color: var(--vscode-charts-green, #5cb85c);
+    color: #ffffff;
+}
+.mention-tag[data-type="contact"] .codicon,
+.mention-tag[data-type="contact"] .label {
+    color: #ffffff;
+}
+/* Folder tag - 黄色主题，使用深色文字确保可读性 */
+.mention-tag[data-type="folder"] {
+    background: var(--vscode-charts-yellow, #d4a017);
+    border-color: var(--vscode-charts-yellow, #e6b822);
+    color: #1a1a1a;
+}
+.mention-tag[data-type="folder"] .codicon,
+.mention-tag[data-type="folder"] .label {
+    color: #1a1a1a;
+}
+/* File tag - 蓝色主题，使用白色文字 */
+.mention-tag[data-type="file"] {
+    background: var(--vscode-charts-blue, #2e7bd6);
+    border-color: var(--vscode-charts-blue, #4a9eff);
+    color: #ffffff;
+}
+.mention-tag[data-type="file"] .codicon,
+.mention-tag[data-type="file"] .label {
+    color: #ffffff;
+}
+/* Image tag - 紫色主题，使用白色文字 */
+.mention-tag[data-type="image"] {
+    background: var(--vscode-charts-purple, #8b5fb8);
+    border-color: var(--vscode-charts-purple, #a67fd4);
+    color: #ffffff;
+}
+.mention-tag[data-type="image"] .codicon,
+.mention-tag[data-type="image"] .label {
+    color: #ffffff;
+}
+/* 在消息气泡中的 tag 样式 - 使用更不透明的背景确保清晰可见 */
+.message-container.self .message .mention-tag {
+    background: var(--vscode-charts-green, #4a9e4a);
+    border-color: var(--vscode-charts-green, #5cb85c);
+    color: #ffffff;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.25);
+}
+.message-container.self .message .mention-tag[data-type="contact"] {
+    background: var(--vscode-charts-green, #4a9e4a);
+    color: #ffffff;
+}
+.message-container.self .message .mention-tag[data-type="folder"] {
+    background: var(--vscode-charts-yellow, #d4a017);
+    color: #1a1a1a;
+}
+.message-container.self .message .mention-tag[data-type="file"] {
+    background: var(--vscode-charts-blue, #2e7bd6);
+    color: #ffffff;
+}
+.message-container.self .message .mention-tag[data-type="image"] {
+    background: var(--vscode-charts-purple, #8b5fb8);
+    color: #ffffff;
+}
+.message-container.other .message .mention-tag {
+    background: var(--vscode-charts-green, #4a9e4a);
+    border-color: var(--vscode-charts-green, #5cb85c);
+    color: #ffffff;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.25);
+}
+.message-container.other .message .mention-tag[data-type="contact"] {
+    background: var(--vscode-charts-green, #4a9e4a);
+    color: #ffffff;
+}
+.message-container.other .message .mention-tag[data-type="folder"] {
+    background: var(--vscode-charts-yellow, #d4a017);
+    color: #1a1a1a;
+}
+.message-container.other .message .mention-tag[data-type="file"] {
+    background: var(--vscode-charts-blue, #2e7bd6);
+    color: #ffffff;
+}
+.message-container.other .message .mention-tag[data-type="image"] {
+    background: var(--vscode-charts-purple, #8b5fb8);
+    color: #ffffff;
+}
 
 /* Settings Overlay Styles */
 #settings-overlay {

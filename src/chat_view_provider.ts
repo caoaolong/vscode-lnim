@@ -22,6 +22,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private static readonly DEFAULT_PORT = 18080;
 
   private _view?: vscode.WebviewView;
+  private _currentWebviewView?: vscode.WebviewView;
   private _userSettings: UserSettings;
   private _contacts: Contact[];
   private _currentPort: number;
@@ -40,6 +41,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       view: this._view,
       defaultPort: ChatViewProvider.DEFAULT_PORT,
       getSelfId: () => this.id(),
+      onScanContactResult: (result) => {
+        this.handleScanContactResult(result);
+      },
     });
   }
 
@@ -55,6 +59,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   ) {
     this._view = webviewView;
     this._messageService.attachView(webviewView);
+    // 更新回调中的 view 引用
+    this._currentWebviewView = webviewView;
 
     webviewView.webview.options = {
       // Allow scripts in the webview
@@ -107,45 +113,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         }
         case "scanContacts": {
-          const baseIp = this._userSettings.ip;
-          if (!baseIp) {
-            vscode.window.showErrorMessage("请先在设置中配置本机 IP 地址");
+          const targetHost = data.targetHost as string;
+          // 解析 IP:端口 格式
+          const parts = targetHost.trim().split(":");
+          if (parts.length !== 2) {
+            vscode.window.showErrorMessage("主机地址格式必须为 IP:端口");
             break;
           }
-          const bits =
-            typeof data.maskBits === "number" && data.maskBits >= 0 && data.maskBits <= 32
-              ? data.maskBits
-              : 24;
+
+          const targetIp = parts[0].trim();
+          const portStr = parts[1].trim();
+          const targetPort = parseInt(portStr, 10);
+
+          if (!targetIp || !portStr || isNaN(targetPort) || targetPort <= 0 || targetPort > 65535) {
+            vscode.window.showErrorMessage("主机地址格式必须为 IP:有效端口(1-65535)");
+            break;
+          }
+
           vscode.window.setStatusBarMessage(
-            `正在扫描 ${baseIp}/${bits} ...`,
-            1500
+            `正在向 ${targetIp}:${targetPort} 发送 LinkMessage...`,
+            2000
           );
-          const peers: DiscoveredPeer[] =
-            await this._messageService.scanSubnet(bits, baseIp);
-          if (!peers || peers.length === 0) {
-            vscode.window.showInformationMessage("当前网段未发现在线 LNIM 客户端");
-            break;
-          }
-          for (const p of peers) {
-            let nickname = p.id;
-            try {
-              const decoded = Buffer.from(p.id, "base64").toString("utf8");
-              const parts = decoded.split(":");
-              if (parts.length > 0 && parts[0]) {
-                nickname = parts[0];
-              }
-            } catch {}
-            const contact: Contact = {
-              ip: p.ip,
-              port: p.port,
-              username: nickname,
-            };
-            this._contacts = await this._store.addContact(contact);
-          }
-          webviewView.webview.postMessage({
-            type: "contactsSaved",
-            contacts: this._contacts,
-          });
+
+          // 创建临时联系人用于发送扫描消息
+          const tempContact: Contact = {
+            ip: targetIp,
+            port: targetPort,
+            username: "",
+          };
+
+          // 只负责发送消息，结果在 message 事件处理器中通过回调处理
+          this._messageService.sendScanContactMessage(tempContact);
           break;
         }
         case "getContactsStatus": {
@@ -166,15 +164,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           webviewView.webview.postMessage({
             type: "contactsStatus",
             statuses,
-          });
-          break;
-        }
-        case "addContact": {
-          const c: Contact = data.contact;
-          this._contacts = await this._store.addContact(c);
-          webviewView.webview.postMessage({
-            type: "contactsSaved",
-            contacts: this._contacts,
           });
           break;
         }
@@ -445,5 +434,51 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       text += possible.charAt(Math.floor(Math.random() * possible.length));
     }
     return text;
+  }
+
+  private async handleScanContactResult(result: {
+    ip: string;
+    port: number;
+    id?: string;
+    online: boolean;
+  }) {
+    const webviewView = this._currentWebviewView || this._view;
+    if (!webviewView) {
+      return;
+    }
+
+    if (result.online) {
+      // 如果收到回复，尝试从 ID 中解析用户名
+      let username = `用户_${result.ip}`;
+      if (result.id) {
+        try {
+          const decoded = Buffer.from(result.id, "base64").toString("utf8");
+          const parts = decoded.split(":");
+          if (parts.length > 0 && parts[0]) {
+            username = parts[0];
+          }
+        } catch {
+          // 如果解析失败，使用默认用户名
+        }
+      }
+
+      const contact: Contact = {
+        ip: result.ip,
+        port: result.port,
+        username: username,
+      };
+      this._contacts = await this._store.addContact(contact);
+      webviewView.webview.postMessage({
+        type: "contactsSaved",
+        contacts: this._contacts,
+      });
+      vscode.window.showInformationMessage(
+        `已成功连接到 ${result.ip}:${result.port} (${username}) 并添加到联系人列表`
+      );
+    } else {
+      vscode.window.showWarningMessage(
+        `无法连接到 ${result.ip}:${result.port}，目标可能不在线或未响应`
+      );
+    }
   }
 }
