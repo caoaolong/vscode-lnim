@@ -6,7 +6,6 @@ import {
   ChatMessageService,
   ChatContact as MessageContact,
   ChatUserSettings as MessageUserSettings,
-  DiscoveredPeer,
 } from "./chat_message_service";
 import {
   ChatDataStore,
@@ -36,13 +35,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._store = new ChatDataStore(this._context);
     this._userSettings = this._store.getUserSettings();
     this._contacts = this._store.getContacts();
+    // 插件启动时重置所有联系人的 status 为 false
+    this._store.resetAllContactsStatus().then((contacts) => {
+      this._contacts = contacts;
+    });
     this._currentPort = this._userSettings.port || ChatViewProvider.DEFAULT_PORT;
     this._messageService = new ChatMessageService(this._currentPort, {
       view: this._view,
       defaultPort: ChatViewProvider.DEFAULT_PORT,
       getSelfId: () => this.id(),
-      onScanContactResult: (result) => {
-        this.handleScanContactResult(result);
+      onLinkMessageReceived: (result) => {
+        this.handleLinkMessageReceived(result);
       },
     });
   }
@@ -436,30 +439,38 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return text;
   }
 
-  private async handleScanContactResult(result: {
+  private async handleLinkMessageReceived(result: {
     ip: string;
     port: number;
     id?: string;
-    online: boolean;
+    isReply: boolean;
   }) {
-    const webviewView = this._currentWebviewView || this._view;
-    if (!webviewView) {
-      return;
-    }
+    // 判断收到的来源是否在联系人中，不存在则加入本地列表中
+    const existingContact = this._contacts.find(
+      (c) =>
+        c.ip === result.ip &&
+        (c.port || ChatViewProvider.DEFAULT_PORT) ===
+          (result.port || ChatViewProvider.DEFAULT_PORT)
+    );
 
-    if (result.online) {
-      // 如果收到回复，尝试从 ID 中解析用户名
+    if (existingContact) {
+      // 如果联系人已存在，更新 status 为 true（在线）
+      this._contacts = await this._store.updateContactStatus(
+        result.ip,
+        result.port,
+        true
+      );
+    } else if (result.id) {
+      // 如果联系人不存在，添加新联系人（status 默认为 false，但收到 LinkMessage 表示在线，所以设为 true）
       let username = `用户_${result.ip}`;
-      if (result.id) {
-        try {
-          const decoded = Buffer.from(result.id, "base64").toString("utf8");
-          const parts = decoded.split(":");
-          if (parts.length > 0 && parts[0]) {
-            username = parts[0];
-          }
-        } catch {
-          // 如果解析失败，使用默认用户名
+      try {
+        const decoded = Buffer.from(result.id, "base64").toString("utf8");
+        const parts = decoded.split(":");
+        if (parts.length > 0 && parts[0]) {
+          username = parts[0];
         }
+      } catch {
+        // 如果解析失败，使用默认用户名
       }
 
       const contact: Contact = {
@@ -468,17 +479,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         username: username,
       };
       this._contacts = await this._store.addContact(contact);
+      // 收到 LinkMessage 表示在线，更新 status 为 true
+      this._contacts = await this._store.updateContactStatus(
+        result.ip,
+        result.port,
+        true
+      );
+    }
+
+    const webviewView = this._currentWebviewView || this._view;
+    if (webviewView) {
       webviewView.webview.postMessage({
         type: "contactsSaved",
         contacts: this._contacts,
       });
-      vscode.window.showInformationMessage(
-        `已成功连接到 ${result.ip}:${result.port} (${username}) 并添加到联系人列表`
-      );
-    } else {
-      vscode.window.showWarningMessage(
-        `无法连接到 ${result.ip}:${result.port}，目标可能不在线或未响应`
-      );
     }
   }
 }

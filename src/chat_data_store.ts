@@ -75,10 +75,41 @@ export class ChatDataStore {
           x.username === c.username
       );
       if (!exists) {
-        this.contacts.push(c);
+        // 新添加的联系人 status 默认为 false
+        const newContact: StoredContact = {
+          ...c,
+          status: false,
+        };
+        this.contacts.push(newContact);
         await this.context.globalState.update("contacts", this.contacts);
       }
     }
+    return this.contacts;
+  }
+
+  public async updateContactStatus(
+    ip: string,
+    port: number | undefined,
+    status: boolean
+  ): Promise<StoredContact[]> {
+    const targetPort = port || ChatDataStore.DEFAULT_PORT;
+    const contact = this.contacts.find(
+      (c) =>
+        c.ip === ip &&
+        (c.port || ChatDataStore.DEFAULT_PORT) === targetPort
+    );
+    if (contact) {
+      contact.status = status;
+      await this.context.globalState.update("contacts", this.contacts);
+    }
+    return this.contacts;
+  }
+
+  public async resetAllContactsStatus(): Promise<StoredContact[]> {
+    this.contacts.forEach((c) => {
+      c.status = false;
+    });
+    await this.context.globalState.update("contacts", this.contacts);
     return this.contacts;
   }
 

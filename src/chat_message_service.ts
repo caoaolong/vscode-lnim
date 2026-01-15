@@ -2,33 +2,6 @@ import * as dgram from "dgram";
 import * as vscode from "vscode";
 import { LinkMessage } from "./lnim_message";
 
-function ipToInt(ip: string): number | null {
-  const parts = ip.split(".");
-  if (parts.length !== 4) {
-    return null;
-  }
-  let n = 0;
-  for (const p of parts) {
-    const v = Number(p);
-    if (!Number.isInteger(v) || v < 0 || v > 255) {
-      return null;
-    }
-    n = (n << 8) | v;
-  }
-  return n >>> 0;
-}
-
-function intToIp(n: number): string | null {
-  if (!Number.isInteger(n) || n < 0 || n > 0xffffffff) {
-    return null;
-  }
-  const p1 = (n >>> 24) & 0xff;
-  const p2 = (n >>> 16) & 0xff;
-  const p3 = (n >>> 8) & 0xff;
-  const p4 = n & 0xff;
-  return `${p1}.${p2}.${p3}.${p4}`;
-}
-
 export interface ChatUserSettings {
   nickname: string;
   ip: string;
@@ -41,21 +14,15 @@ export interface ChatContact {
   username: string;
 }
 
-export interface DiscoveredPeer {
-  ip: string;
-  port: number;
-  id: string;
-}
-
 export interface ChatMessageServiceOptions {
   view?: vscode.WebviewView;
   defaultPort: number;
   getSelfId?: () => string;
-  onScanContactResult?: (result: {
+  onLinkMessageReceived?: (result: {
     ip: string;
     port: number;
     id?: string;
-    online: boolean;
+    isReply: boolean;
   }) => void;
 }
 
@@ -65,32 +32,23 @@ export class ChatMessageService {
   private readonly defaultPort: number;
   private view?: vscode.WebviewView;
   private readonly getSelfId?: () => string;
-  private readonly onScanContactResult?: (result: {
+  private readonly onLinkMessageReceived?: (result: {
     ip: string;
     port: number;
     id?: string;
-    online: boolean;
+    isReply: boolean;
   }) => void;
   private readonly pendingLinkChecks = new Map<
     string,
     { resolve: (online: boolean) => void; timeout: NodeJS.Timeout }
   >();
-  private readonly pendingScanContacts = new Map<
-    string,
-    { timeout: NodeJS.Timeout }
-  >();
-  private currentScan?:
-    | {
-        results: Map<string, DiscoveredPeer>;
-      }
-    | undefined;
 
   constructor(port: number, options: ChatMessageServiceOptions) {
     this.currentPort = port || options.defaultPort;
     this.defaultPort = options.defaultPort;
     this.view = options.view;
     this.getSelfId = options.getSelfId;
-    this.onScanContactResult = options.onScanContactResult;
+    this.onLinkMessageReceived = options.onLinkMessageReceived;
     this.startUdpServer(this.currentPort);
   }
 
@@ -193,30 +151,8 @@ export class ChatMessageService {
       contact.port && contact.port > 0 && contact.port <= 65535
         ? contact.port
         : this.defaultPort;
-    const key = `${contact.ip}:${targetPort}`;
 
-    // 如果已有待处理的扫描请求，先清除
-    const existing = this.pendingScanContacts.get(key);
-    if (existing) {
-      clearTimeout(existing.timeout);
-      this.pendingScanContacts.delete(key);
-    }
-
-    // 设置超时，如果1秒内没收到回复，通知失败
-    const timeout = setTimeout(() => {
-      this.pendingScanContacts.delete(key);
-      if (this.onScanContactResult) {
-        this.onScanContactResult({
-          ip: contact.ip,
-          port: targetPort,
-          online: false,
-        });
-      }
-    }, 1000);
-
-    this.pendingScanContacts.set(key, { timeout });
-
-    // 发送 LinkMessage
+    // 只发送 LinkMessage，不等待回复
     const fromId = this.getSelfId ? this.getSelfId() : "";
     const payload: LinkMessage = {
       type: "link",
@@ -226,65 +162,7 @@ export class ChatMessageService {
     this.udpServer.send(buf, targetPort, contact.ip, (err) => {
       if (err) {
         console.error("Failed to send scan LinkMessage:", err);
-        clearTimeout(timeout);
-        this.pendingScanContacts.delete(key);
-        if (this.onScanContactResult) {
-          this.onScanContactResult({
-            ip: contact.ip,
-            port: targetPort,
-            online: false,
-          });
-        }
       }
-    });
-  }
-
-  public async scanSubnet(
-    maskBits: number,
-    baseIp: string
-  ): Promise<DiscoveredPeer[]> {
-    if (!this.udpServer) {
-      return [];
-    }
-    const bits = Math.max(0, Math.min(32, maskBits | 0));
-    const base = ipToInt(baseIp);
-    if (base === null) {
-      return [];
-    }
-    const mask =
-      bits === 0 ? 0 : ((0xffffffff << (32 - bits)) >>> 0) >>> 0;
-    const network = base & mask;
-    const hostCount = bits === 32 ? 1 : 1 << (32 - bits);
-    this.currentScan = {
-      results: new Map<string, DiscoveredPeer>(),
-    };
-    const targetPort = this.currentPort || this.defaultPort;
-    const fromId = this.getSelfId ? this.getSelfId() : "";
-    const payload: LinkMessage = {
-      type: "link",
-      from: fromId,
-    };
-    const buf = Buffer.from(JSON.stringify(payload), "utf8");
-    for (let i = 1; i < hostCount - 1; i++) {
-      const ipInt = (network + i) >>> 0;
-      const ip = intToIp(ipInt);
-      if (!ip) {
-        continue;
-      }
-      this.udpServer.send(buf, targetPort, ip, (err) => {
-        if (err) {
-          console.error("Failed to send scan LinkMessage:", err);
-        }
-      });
-    }
-    return new Promise<DiscoveredPeer[]>((resolve) => {
-      setTimeout(() => {
-        const result = this.currentScan
-          ? Array.from(this.currentScan.results.values())
-          : [];
-        this.currentScan = undefined;
-        resolve(result);
-      }, 1000);
     });
   }
 
@@ -388,30 +266,7 @@ export class ChatMessageService {
     const key = `${rinfo.address}:${rinfo.port}`;
     const isReply = !!payload.reply;
 
-    // 处理待处理的在线检测请求
-    const pending = this.pendingLinkChecks.get(key);
-    if (pending) {
-      this.pendingLinkChecks.delete(key);
-      clearTimeout(pending.timeout);
-      pending.resolve(true);
-    }
-
-    // 处理待处理的扫描联系人请求
-    const pendingScan = this.pendingScanContacts.get(key);
-    if (pendingScan && isReply && typeof payload.from === "string") {
-      this.pendingScanContacts.delete(key);
-      clearTimeout(pendingScan.timeout);
-      if (this.onScanContactResult) {
-        this.onScanContactResult({
-          ip: rinfo.address,
-          port: rinfo.port,
-          id: payload.from,
-          online: true,
-        });
-      }
-    }
-
-    // 如果是收到的 LinkMessage（非回复），自动回复
+    // 核心功能1: 接收到 LinkMessage 时回复 LinkMessage（from改为自身ID）
     if (!isReply && this.getSelfId) {
       const myId = this.getSelfId();
       const replyPayload: LinkMessage = {
@@ -427,16 +282,22 @@ export class ChatMessageService {
       });
     }
 
-    // 处理子网扫描结果
-    if (this.currentScan && isReply && typeof payload.from === "string") {
-      const scanKey = `${rinfo.address}:${rinfo.port}`;
-      if (!this.currentScan.results.has(scanKey)) {
-        this.currentScan.results.set(scanKey, {
-          ip: rinfo.address,
-          port: rinfo.port,
-          id: payload.from,
-        });
-      }
+    // 核心功能2: 通知收到 LinkMessage，让外部判断是否需要添加到联系人列表
+    if (typeof payload.from === "string" && this.onLinkMessageReceived) {
+      this.onLinkMessageReceived({
+        ip: rinfo.address,
+        port: rinfo.port,
+        id: payload.from,
+        isReply,
+      });
+    }
+
+    // 辅助功能: 处理待处理的在线检测请求
+    const pending = this.pendingLinkChecks.get(key);
+    if (pending) {
+      this.pendingLinkChecks.delete(key);
+      clearTimeout(pending.timeout);
+      pending.resolve(true);
     }
   }
 
