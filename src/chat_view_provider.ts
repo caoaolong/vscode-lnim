@@ -60,7 +60,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Allow scripts in the webview
       enableScripts: true,
 
-      localResourceRoots: [this._extensionUri],
+      localResourceRoots: [
+        this._extensionUri,
+        vscode.Uri.joinPath(this._extensionUri, "node_modules"),
+      ],
     };
 
     webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
@@ -383,16 +386,55 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const nonce = this.getNonce();
       const cspSource = webview.cspSource;
 
+      // Get local resource URIs
+      const jqueryUri = this._getLocalResourceUri(
+        webview,
+        "node_modules",
+        "jquery",
+        "dist",
+        "jquery.min.js"
+      );
+      const codiconsCssUri = this._getLocalResourceUri(
+        webview,
+        "node_modules",
+        "@vscode",
+        "codicons",
+        "dist",
+        "codicon.css"
+      );
+      const chatCssUri = this._getLocalResourceUri(
+        webview,
+        "resources",
+        "chat.css"
+      );
+      const chatJsUri = this._getLocalResourceUri(
+        webview,
+        "resources",
+        "chat.js"
+      );
+
       // Replace placeholders in the HTML file
       html = html
         .replace(/{{cspSource}}/g, cspSource)
-        .replace(/{{nonce}}/g, nonce);
+        .replace(/{{nonce}}/g, nonce)
+        .replace(/{{jqueryUri}}/g, jqueryUri.toString())
+        .replace(/{{codiconsCssUri}}/g, codiconsCssUri.toString())
+        .replace(/{{chatCssUri}}/g, chatCssUri.toString())
+        .replace(/{{chatJsUri}}/g, chatJsUri.toString());
 
       return html;
     } catch (error) {
       console.error("Error loading HTML file:", error);
       return `<!DOCTYPE html><html><body>Error loading HTML file: ${error}</body></html>`;
     }
+  }
+
+  private _getLocalResourceUri(
+    webview: vscode.Webview,
+    ...pathSegments: string[]
+  ): vscode.Uri {
+    const uri = vscode.Uri.joinPath(this._extensionUri, ...pathSegments);
+    return webview.asWebviewUri(uri);
   }
 
   private getNonce() {
