@@ -1,5 +1,5 @@
 export interface LinkMessage {
-	type: "link";
-	from: string;
-	reply?: boolean;
+  type: "link";
+  from: string;
+  linkType: "request" | "reply";
 }

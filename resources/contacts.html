@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src {{cspSource}} 'unsafe-inline'; font-src {{cspSource}}; script-src {{cspSource}} 'unsafe-inline'; connect-src https:;">
+    <title>Contacts</title>
+    <link rel="stylesheet" href="{{codiconsCssUri}}">
+    <link rel="stylesheet" href="{{chatCssUri}}">
+    <script src="{{jqueryUri}}"></script>
+    <style>
+        body { padding: 20px; }
+        #contacts-panel { width: 100%; max-width: 800px; margin: 0 auto; border: none; box-shadow: none; padding: 0; background: transparent; }
+        .back-header { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; border-bottom: 1px solid var(--vscode-widget-border); padding-bottom: 10px; }
+        .back-header h3 { margin: 0; }
+        #contact-form { display: flex; gap: 10px; margin-bottom: 20px; }
+        #contact-form input { flex-grow: 1; }
+    </style>
+</head>
+<body>
+    <div id="contacts-panel">
+        <div class="back-header">
+            <button class="icon-btn" id="back-btn" title="Back">
+                <span class="codicon codicon-arrow-left"></span>
+            </button>
+            <h3>Contacts</h3>
+        </div>
+
+        <div id="contact-form">
+            <input type="text" id="contact-ip" placeholder="Host Address (IP:Port)">
+            <button class="icon-btn" id="scan-contacts-btn" title="Scan Network Contacts">
+                <span class="codicon codicon-search"></span>
+            </button>
+        </div>
+
+        <div id="contacts-list" class="contacts-list">
+            <!-- Contacts will be rendered here -->
+        </div>
+    </div>
+    <script src="{{contactsJsUri}}"></script>
+</body>
+</html>

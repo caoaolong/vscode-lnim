@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src {{cspSource}} 'unsafe-inline'; font-src {{cspSource}}; script-src {{cspSource}} 'unsafe-inline'; connect-src https:;">
+    <title>Settings</title>
+    <link rel="stylesheet" href="{{codiconsCssUri}}">
+    <link rel="stylesheet" href="{{chatCssUri}}">
+    <script src="{{jqueryUri}}"></script>
+    <style>
+        body { padding: 20px; }
+        #settings-panel { width: 100%; max-width: 600px; margin: 0 auto; border: none; box-shadow: none; padding: 0; background: transparent; }
+        .back-header { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; border-bottom: 1px solid var(--vscode-widget-border); padding-bottom: 10px; }
+        .back-header h3 { margin: 0; }
+    </style>
+</head>
+<body>
+    <div id="settings-panel">
+        <div class="back-header">
+            <button class="icon-btn" id="back-btn" title="Back">
+                <span class="codicon codicon-arrow-left"></span>
+            </button>
+            <h3>Settings</h3>
+        </div>
+
+        <div class="form-group">
+            <label for="nickname">Nickname</label>
+            <input type="text" id="nickname" placeholder="Enter your nickname">
+        </div>
+        <div class="form-group">
+            <label for="ip-address">IP Address</label>
+            <select id="ip-address"></select>
+        </div>
+        <div class="form-group">
+            <label for="port">Port</label>
+            <input type="number" id="port" min="1" max="65535" placeholder="18080">
+        </div>
+        <div class="button-group">
+            <button id="save-btn">Save</button>
+        </div>
+    </div>
+    <script src="{{settingsJsUri}}"></script>
+</body>
+</html>

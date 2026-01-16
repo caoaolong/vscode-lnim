@@ -13,41 +13,12 @@
     <div id="header">
         <h3>LNIM Chat</h3>
         <div id="header-right">
-            <button class="icon-btn" id="contacts-btn" title="添加联系人">
+            <button class="icon-btn" id="contacts-btn" title="联系人">
                 <span class="codicon codicon-account"></span>
             </button>
             <button class="icon-btn" id="settings-btn" title="设置">
                 <span class="codicon codicon-gear"></span>
             </button>
-        </div>
-    </div>
-
-    <div id="contacts-overlay">
-        <div id="contacts-panel">
-            <h3>
-                <span>联系人</span>
-                <div style="display:flex;align-items:center;gap:6px;">
-                    <button class="icon-btn" id="close-contacts-btn" title="关闭">
-                        <span class="codicon codicon-close"></span>
-                    </button>
-                </div>
-            </h3>
-            <div id="contact-form">
-                <input type="text" id="contact-ip" placeholder="主机地址 (IP:端口)">
-                <button class="icon-btn" id="scan-contacts-btn" title="扫描局域网联系人">
-                    <span class="codicon codicon-search"></span>
-								</button>
-            </div>
-            <table class="contacts">
-                <thead>
-                    <tr>
-                        <th>主机地址</th>
-                        <th>用户名</th>
-                        <th>操作</th>
-                    </tr>
-                </thead>
-                <tbody id="contacts-tbody"></tbody>
-            </table>
         </div>
     </div>
 
@@ -60,28 +31,6 @@
             <button id="image-btn" class="icon-btn" title="插入图片">
                 <span class="codicon codicon-file-media"></span>
             </button>
-        </div>
-    </div>
-
-    <div id="settings-overlay">
-        <div id="settings-panel">
-            <h3>Settings</h3>
-            <div class="form-group">
-                <label for="nickname">Nickname</label>
-                <input type="text" id="nickname" placeholder="Enter your nickname">
-            </div>
-            <div class="form-group">
-                <label for="ip-address">IP Address</label>
-                <select id="ip-address"></select>
-            </div>
-            <div class="form-group">
-                <label for="port">Port</label>
-                <input type="number" id="port" min="1" max="65535" placeholder="18080">
-            </div>
-            <div class="button-group">
-                <button id="cancel-btn">取消</button>
-                <button id="save-btn">保存</button>
-            </div>
         </div>
     </div>
 

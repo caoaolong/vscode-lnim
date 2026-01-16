@@ -1,17 +1,13 @@
 import * as dgram from "dgram";
 import * as vscode from "vscode";
 import { LinkMessage } from "./lnim_message";
+import { ChatMessageManager, ChatContact } from "./chat_message_manager";
+import { ChatMessageProcessor } from "./chat_message_processor";
 
 export interface ChatUserSettings {
   nickname: string;
   ip: string;
   port: number;
-}
-
-export interface ChatContact {
-  ip: string;
-  port?: number;
-  username: string;
 }
 
 export interface ChatMessageServiceOptions {
@@ -24,6 +20,7 @@ export interface ChatMessageServiceOptions {
     id?: string;
     isReply: boolean;
   }) => void;
+  context: vscode.ExtensionContext;
 }
 
 export class ChatMessageService {
@@ -42,6 +39,8 @@ export class ChatMessageService {
     string,
     { resolve: (online: boolean) => void; timeout: NodeJS.Timeout }
   >();
+  private readonly messageManager?: ChatMessageManager;
+  private readonly messageProcessor: ChatMessageProcessor;
 
   constructor(port: number, options: ChatMessageServiceOptions) {
     this.currentPort = port || options.defaultPort;
@@ -49,6 +48,11 @@ export class ChatMessageService {
     this.view = options.view;
     this.getSelfId = options.getSelfId;
     this.onLinkMessageReceived = options.onLinkMessageReceived;
+		// 创建消息管理器
+		this.messageManager = new ChatMessageManager(options.context.globalStorageUri.fsPath);
+		// 创建消息处理器
+    this.messageProcessor = new ChatMessageProcessor();
+		// 开启服务
     this.startUdpServer(this.currentPort);
   }
 
@@ -76,6 +80,7 @@ export class ChatMessageService {
     from: ChatUserSettings,
     contacts: ChatContact[]
   ) {
+    const timestamp = Date.now();
     const payload = JSON.stringify({
       type: "chat",
       from,
@@ -97,6 +102,9 @@ export class ChatMessageService {
           );
         }
       });
+      if (this.messageManager) {
+        this.messageManager.saveOutgoing(c, text, timestamp, this.defaultPort);
+      }
     }
     console.log(
       "Sent message:",
@@ -133,6 +141,7 @@ export class ChatMessageService {
       const payload: LinkMessage = {
         type: "link",
         from: fromId,
+        linkType: "request",
       };
       const buf = Buffer.from(JSON.stringify(payload), "utf8");
       this.udpServer!.send(buf, targetPort, contact.ip, (err) => {
@@ -157,6 +166,7 @@ export class ChatMessageService {
     const payload: LinkMessage = {
       type: "link",
       from: fromId,
+      linkType: "request",
     };
     const buf = Buffer.from(JSON.stringify(payload), "utf8");
     this.udpServer.send(buf, targetPort, contact.ip, (err) => {
@@ -168,7 +178,9 @@ export class ChatMessageService {
 
   public sendLinkMessage(contact: ChatContact, fromId: string) {
     if (!contact || !contact.ip || !this.udpServer) {
-      vscode.window.showErrorMessage("无法发送 LinkMessage：目标或本地 UDP 服务无效");
+      vscode.window.showErrorMessage(
+        "无法发送 LinkMessage：目标或本地 UDP 服务无效"
+      );
       return;
     }
     const targetPort =
@@ -178,15 +190,16 @@ export class ChatMessageService {
     const payload: LinkMessage = {
       type: "link",
       from: fromId,
+      linkType: "request",
     };
     const buf = Buffer.from(JSON.stringify(payload), "utf8");
     this.udpServer.send(buf, targetPort, contact.ip, (err) => {
       if (err) {
         console.error("Failed to send LinkMessage:", err);
         vscode.window.showErrorMessage(
-          `向 ${contact.username}(${contact.ip}:${targetPort}) 发送 LinkMessage 失败：${String(
-            err
-          )}`
+          `向 ${contact.username}(${
+            contact.ip
+          }:${targetPort}) 发送 LinkMessage 失败：${String(err)}`
         );
       } else {
         vscode.window.showInformationMessage(
@@ -235,12 +248,12 @@ export class ChatMessageService {
             this.handleLinkMessage(payload, rinfo);
             return;
           }
-
-          if (payload && payload.type === "ping") {
-            this.handlePingMessage(rinfo);
-            return;
-          }
           if (payload && payload.type === "chat") {
+            if (typeof payload.message === "string") {
+              const meta = this.messageProcessor.process(payload.message);
+              payload.message = meta.message;
+            }
+						console.log(payload);
             this.handleChatMessage(payload);
             return;
           }
@@ -263,27 +276,19 @@ export class ChatMessageService {
   }
 
   private handleLinkMessage(payload: any, rinfo: dgram.RemoteInfo) {
-    const key = `${rinfo.address}:${rinfo.port}`;
-    const isReply = !!payload.reply;
-
-    // 核心功能1: 接收到 LinkMessage 时回复 LinkMessage（from改为自身ID）
-    if (!isReply && this.getSelfId) {
-      const myId = this.getSelfId();
-      const replyPayload: LinkMessage = {
-        type: "link",
-        from: myId,
-        reply: true,
-      };
-      const replyBuf = Buffer.from(JSON.stringify(replyPayload), "utf8");
-      this.udpServer?.send(replyBuf, rinfo.port, rinfo.address, (err) => {
-        if (err) {
-          console.error("Failed to send LinkMessage reply:", err);
-        }
-      });
+    const rawType = payload.linkType;
+    if (rawType !== "request" && rawType !== "reply") {
+      return;
     }
+    const linkType: "request" | "reply" = rawType;
+    const isReply = linkType === "reply";
 
-    // 核心功能2: 通知收到 LinkMessage，让外部判断是否需要添加到联系人列表
-    if (typeof payload.from === "string" && this.onLinkMessageReceived) {
+    // 通知收到 LinkMessage，让外部判断是否需要添加到联系人列表
+    if (
+      isReply &&
+      typeof payload.from === "string" &&
+      this.onLinkMessageReceived
+    ) {
       this.onLinkMessageReceived({
         ip: rinfo.address,
         port: rinfo.port,
@@ -291,36 +296,73 @@ export class ChatMessageService {
         isReply,
       });
     }
-
-    // 辅助功能: 处理待处理的在线检测请求
-    const pending = this.pendingLinkChecks.get(key);
-    if (pending) {
-      this.pendingLinkChecks.delete(key);
-      clearTimeout(pending.timeout);
-      pending.resolve(true);
-    }
-  }
-
-  private handlePingMessage(rinfo: dgram.RemoteInfo) {
-    const buf = Buffer.from(JSON.stringify({ type: "pong" }), "utf8");
-    this.udpServer?.send(buf, rinfo.port, rinfo.address);
   }
 
   private handleChatMessage(payload: any) {
-    const from = payload.from;
+    const rawFrom = payload.from;
+    let from: any = rawFrom;
+    if (typeof rawFrom === "string") {
+      try {
+        const decoded = Buffer.from(rawFrom, "base64").toString("utf8");
+        const parts = decoded.split(":");
+        if (parts.length >= 3) {
+          const nickname = parts[0] || "Unknown";
+          const ip = parts[1] || "";
+          const portNum = parseInt(parts[2], 10);
+          from = {
+            id: rawFrom,
+            nickname,
+            ip,
+            port: Number.isFinite(portNum) ? portNum : undefined,
+          };
+        } else if (parts.length >= 1) {
+          const nickname = parts[0] || "Unknown";
+          from = {
+            id: rawFrom,
+            nickname,
+          };
+        }
+      } catch {
+        from = {
+          id: rawFrom,
+        };
+      }
+    }
     const message = payload.message;
+    const timestamp = Date.now();
     console.log(
       "Received message:",
       message,
       "from:",
-      from.nickname || from
+      typeof from === "string" ? from : from.nickname || from.id || ""
     );
+    if (this.messageManager) {
+      if (typeof from === "string") {
+        this.messageManager.saveIncoming(
+          {
+            nickname: from,
+          },
+          message,
+          timestamp
+        );
+      } else {
+        this.messageManager.saveIncoming(
+          {
+            nickname: from.nickname,
+            ip: from.ip,
+            port: from.port,
+          },
+          message,
+          timestamp
+        );
+      }
+    }
     if (this.view) {
       this.view.webview.postMessage({
         type: "receiveMessage",
         from,
         message,
-        timestamp: Date.now(),
+        timestamp,
       });
     }
   }

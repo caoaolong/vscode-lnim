@@ -4,9 +4,13 @@ import * as path from "path";
 import * as os from "os";
 import {
   ChatMessageService,
-  ChatContact as MessageContact,
   ChatUserSettings as MessageUserSettings,
 } from "./chat_message_service";
+import {
+  ChatMessageProcessor,
+  Contact as ProcessorContact,
+} from "./chat_message_processor";
+import { ChatContact as MessageContact } from "./chat_message_manager";
 import {
   ChatDataStore,
   StoredContact,
@@ -27,6 +31,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _currentPort: number;
   private readonly _store: ChatDataStore;
   private readonly _messageService: ChatMessageService;
+  private readonly _processor: ChatMessageProcessor;
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
@@ -39,7 +44,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._store.resetAllContactsStatus().then((contacts) => {
       this._contacts = contacts;
     });
-    this._currentPort = this._userSettings.port || ChatViewProvider.DEFAULT_PORT;
+    this._currentPort =
+      this._userSettings.port || ChatViewProvider.DEFAULT_PORT;
+    this._processor = new ChatMessageProcessor();
+		const context = this._context;
     this._messageService = new ChatMessageService(this._currentPort, {
       view: this._view,
       defaultPort: ChatViewProvider.DEFAULT_PORT,
@@ -47,6 +55,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       onLinkMessageReceived: (result) => {
         this.handleLinkMessageReceived(result);
       },
+      context,
     });
   }
 
@@ -75,10 +84,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       ],
     };
 
-    webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
+    webviewView.webview.html = this._getHtmlForWebview(webviewView.webview, "chat");
 
     webviewView.webview.onDidReceiveMessage(async (data) => {
       switch (data.type) {
+        case "navigate": {
+          const page = data.page || "chat";
+          webviewView.webview.html = this._getHtmlForWebview(webviewView.webview, page);
+          break;
+        }
         case "saveSettings": {
           const incoming = data.settings as UserSettings;
           const updated = await this._store.updateUserSettings(incoming);
@@ -128,8 +142,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const portStr = parts[1].trim();
           const targetPort = parseInt(portStr, 10);
 
-          if (!targetIp || !portStr || isNaN(targetPort) || targetPort <= 0 || targetPort > 65535) {
-            vscode.window.showErrorMessage("主机地址格式必须为 IP:有效端口(1-65535)");
+          if (
+            !targetIp ||
+            !portStr ||
+            isNaN(targetPort) ||
+            targetPort <= 0 ||
+            targetPort > 65535
+          ) {
+            vscode.window.showErrorMessage(
+              "主机地址格式必须为 IP:有效端口(1-65535)"
+            );
             break;
           }
 
@@ -150,24 +172,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         }
         case "getContactsStatus": {
-          const reqList: Contact[] = Array.isArray(data.contacts)
-            ? data.contacts
-            : this._contacts;
-          const statuses = await Promise.all(
-            reqList.map(async (c) => {
-              const online = await this._messageService.checkContactOnline(c);
-              return {
-                ip: c.ip,
-                port: c.port,
-                username: c.username,
-                online,
-              };
-            })
-          );
-          webviewView.webview.postMessage({
-            type: "contactsStatus",
-            statuses,
-          });
+          console.log("获取联系人在线状态");
           break;
         }
         case "checkContactLink": {
@@ -305,42 +310,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private handleSendMessage(data: any) {
-    const msg = (data && (data.value ?? data.message)) || "";
-    const contacts = this.extractContactsFromMessage(msg);
-    if (!contacts.length) {
+    const originalMsg = (data && (data.value ?? data.message)) || "";
+    const meta = this._processor.process(originalMsg, this._contacts);
+    if (!meta.contacts.length) {
       vscode.window.showErrorMessage(
         "消息中没有找到任何有效的联系人，请确认已使用 @用户名"
       );
       return;
     }
+    const cleanedMsg = meta.message;
+    if (!cleanedMsg) {
+      vscode.window.showErrorMessage("消息内容为空，请输入要发送的消息");
+      return;
+    }
     this._messageService.sendChatMessage(
-      msg,
-      this._userSettings as MessageUserSettings,
-      contacts as MessageContact[]
+      cleanedMsg,
+      this._userSettings,
+      meta.contacts
     );
-  }
-
-  private extractContactsFromMessage(text: string): Contact[] {
-    if (!text) {
-      return [];
-    }
-    const mentioned = new Set<string>();
-    const regex = /@([^\s@#]+)/g;
-    let match: RegExpExecArray | null;
-    while ((match = regex.exec(text)) !== null) {
-      const name = match[1].replace(/[.,;:!?]+$/, "");
-      if (name) {
-        mentioned.add(name);
-      }
-    }
-    if (mentioned.size === 0) {
-      return [];
-    }
-    const matched = this._contacts.filter((c) => mentioned.has(c.username));
-    if (matched.length === 0) {
-      return [];
-    }
-    return matched;
   }
 
   private getLocalIps(): string[] {
@@ -365,11 +352,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return result;
   }
 
-  private _getHtmlForWebview(webview: vscode.Webview) {
+  private _getHtmlForWebview(webview: vscode.Webview, page: string = "chat") {
     const htmlPath = path.join(
       this._extensionUri.fsPath,
       "resources",
-      "chat.html"
+      `${page}.html`
     );
     try {
       let html = fs.readFileSync(htmlPath, "utf-8");
@@ -404,6 +391,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         "resources",
         "chat.js"
       );
+      const settingsJsUri = this._getLocalResourceUri(
+        webview,
+        "resources",
+        "settings.js"
+      );
+      const contactsJsUri = this._getLocalResourceUri(
+        webview,
+        "resources",
+        "contacts.js"
+      );
 
       // Replace placeholders in the HTML file
       html = html
@@ -412,7 +409,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         .replace(/{{jqueryUri}}/g, jqueryUri.toString())
         .replace(/{{codiconsCssUri}}/g, codiconsCssUri.toString())
         .replace(/{{chatCssUri}}/g, chatCssUri.toString())
-        .replace(/{{chatJsUri}}/g, chatJsUri.toString());
+        .replace(/{{chatJsUri}}/g, chatJsUri.toString())
+        .replace(/{{settingsJsUri}}/g, settingsJsUri.toString())
+        .replace(/{{contactsJsUri}}/g, contactsJsUri.toString());
 
       return html;
     } catch (error) {
@@ -445,6 +444,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     id?: string;
     isReply: boolean;
   }) {
+    if (!result.isReply) {
+      return;
+    }
     // 判断收到的来源是否在联系人中，不存在则加入本地列表中
     const existingContact = this._contacts.find(
       (c) =>
