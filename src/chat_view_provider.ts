@@ -2,15 +2,11 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import { ChatMessageService } from "./chat_message_service";
 import {
-  ChatMessageService,
-  ChatUserSettings as MessageUserSettings,
-} from "./chat_message_service";
-import {
-  ChatMessageProcessor,
-  Contact as ProcessorContact,
+  ChatMessageProcessor
 } from "./chat_message_processor";
-import { ChatContact as MessageContact } from "./chat_message_manager";
+import { ChatMessageManager } from "./chat_message_manager";
 import {
   ChatDataStore,
   StoredContact,
@@ -32,6 +28,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private readonly _store: ChatDataStore;
   private readonly _messageService: ChatMessageService;
   private readonly _processor: ChatMessageProcessor;
+  private readonly _messageManager: ChatMessageManager;
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
@@ -47,7 +44,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._currentPort =
       this._userSettings.port || ChatViewProvider.DEFAULT_PORT;
     this._processor = new ChatMessageProcessor();
-		const context = this._context;
+    const context = this._context;
+    this._messageManager = new ChatMessageManager(this._context.globalStorageUri.fsPath);
     this._messageService = new ChatMessageService(this._currentPort, {
       view: this._view,
       defaultPort: ChatViewProvider.DEFAULT_PORT,
@@ -85,11 +83,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     };
 
     webviewView.webview.html = this._getHtmlForWebview(webviewView.webview, "chat");
+    this.sendChatHistoryToWebview(webviewView.webview);
 
     webviewView.webview.onDidReceiveMessage(async (data) => {
       switch (data.type) {
         case "navigate": {
           const page = data.page || "chat";
+          if (page === "contacts") {
+            this._contacts = await this._store.resetAllContactsStatus();
+          }
           webviewView.webview.html = this._getHtmlForWebview(webviewView.webview, page);
           break;
         }
@@ -120,6 +122,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             type: "localIps",
             ips,
           });
+          break;
+        }
+        case "getChatHistory": {
+          await this.sendChatHistoryToWebview(webviewView.webview);
           break;
         }
         case "getContacts": {
@@ -182,11 +188,50 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         case "deleteContact": {
           const c: Contact = data.contact;
+          const answer = await vscode.window.showWarningMessage(
+            `确定要删除联系人 ${c.username || c.ip} 吗？`,
+            "删除",
+            "取消"
+          );
+          if (answer !== "删除") {
+            break;
+          }
           this._contacts = await this._store.deleteContact(c);
           webviewView.webview.postMessage({
             type: "contactsSaved",
             contacts: this._contacts,
           });
+          break;
+        }
+        case "deleteRecord": {
+          const c: Contact = data.contact;
+          const answer = await vscode.window.showWarningMessage(
+            `确定要清空与 ${c.username || c.ip} 的聊天记录吗？此操作不可撤销。`,
+            "清空",
+            "取消"
+          );
+          if (answer !== "清空") {
+            break;
+          }
+          await this._messageService.deleteHistory(c);
+          vscode.window.showInformationMessage(
+            `Chat history with ${c.username} cleared.`
+          );
+          break;
+        }
+        case "clearAllChatHistory": {
+          const answer = await vscode.window.showWarningMessage(
+            "确定要清空所有聊天记录吗？此操作不可撤销。",
+            "清空所有",
+            "取消"
+          );
+          if (answer !== "清空所有") {
+            break;
+          }
+          await this._messageService.clearAllHistory();
+          vscode.window.showInformationMessage(
+            "All chat history has been cleared."
+          );
           break;
         }
         case "getFilesAndFolders": {
@@ -307,6 +352,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
       }
     });
+  }
+
+  private async sendChatHistoryToWebview(webview: vscode.Webview) {
+    try {
+      const records = await this._messageManager.getAllHistory(100, 0);
+      webview.postMessage({
+        type: "chatHistory",
+        history: records,
+        selfNickname: this._userSettings.nickname,
+      });
+    } catch (e) {
+      console.error("读取聊天记录失败", e);
+    }
   }
 
   private handleSendMessage(data: any) {

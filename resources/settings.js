@@ -3,6 +3,7 @@ const $nicknameInput = $("#nickname");
 const $ipInput = $("#ip-address");
 const $portInput = $("#port");
 const $saveBtn = $("#save-btn");
+const $clearHistoryBtn = $("#clear-history-btn");
 const $backBtn = $("#back-btn");
 
 let currentUserSettings = {
@@ -36,6 +37,10 @@ $saveBtn.on("click", () => {
     };
     vscode.postMessage({ type: "saveSettings", settings: newSettings });
     vscode.postMessage({ type: "navigate", page: "chat" });
+});
+
+$clearHistoryBtn.on("click", () => {
+    vscode.postMessage({ type: "clearAllChatHistory" });
 });
 
 window.addEventListener("message", (event) => {

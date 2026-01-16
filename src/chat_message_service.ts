@@ -195,15 +195,10 @@ export class ChatMessageService {
     const buf = Buffer.from(JSON.stringify(payload), "utf8");
     this.udpServer.send(buf, targetPort, contact.ip, (err) => {
       if (err) {
-        console.error("Failed to send LinkMessage:", err);
         vscode.window.showErrorMessage(
-          `向 ${contact.username}(${
+          `检测 ${contact.username}(${
             contact.ip
-          }:${targetPort}) 发送 LinkMessage 失败：${String(err)}`
-        );
-      } else {
-        vscode.window.showInformationMessage(
-          `已向 ${contact.username}(${contact.ip}:${targetPort}) 发送 LinkMessage`
+          }:${targetPort}) 的状态时报错：${String(err)}`
         );
       }
     });
@@ -365,5 +360,27 @@ export class ChatMessageService {
         timestamp,
       });
     }
+  }
+
+  public async deleteHistory(contact: { ip: string; port?: number; username?: string }) {
+    if (!this.messageManager) {
+      return;
+    }
+    const peerIp = contact.ip || "";
+    const peerPort =
+      contact.port && contact.port > 0 && contact.port <= 65535
+        ? contact.port
+        : this.defaultPort;
+    const peerUsername = contact.username || "";
+    const peerKey = `${peerIp}|${peerPort}|${peerUsername}`;
+    
+    await this.messageManager.deleteHistory(peerKey);
+  }
+
+  public async clearAllHistory() {
+    if (!this.messageManager) {
+      return;
+    }
+    await this.messageManager.clearAllHistory();
   }
 }

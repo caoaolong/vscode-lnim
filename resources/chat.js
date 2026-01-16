@@ -26,8 +26,9 @@ let directoryItems = [];
 
 // Initialize
 $(document).ready(() => {
-    vscode.postMessage({ type: "getSettings" });
-    vscode.postMessage({ type: "getContacts" });
+  vscode.postMessage({ type: "getSettings" });
+  vscode.postMessage({ type: "getContacts" });
+  vscode.postMessage({ type: "getChatHistory" });
 });
 
 // --- Event Listeners ---
@@ -262,6 +263,27 @@ window.addEventListener("message", (event) => {
         });
       }
       break;
+    case "chatHistory": {
+      const history = message.history || [];
+      const selfNickname =
+        message.selfNickname || currentUserSettings.nickname || "Me";
+      history.forEach((record) => {
+        const ts =
+          typeof record.createdAt === "number" ? record.createdAt : Date.now();
+        checkAndAddTimestamp(ts);
+        addMessage({
+          text: record.content,
+          isSelf: record.direction === "outgoing",
+          nickname:
+            record.direction === "outgoing"
+              ? selfNickname
+              : record.peerUsername || "Unknown",
+          timestamp: ts,
+        });
+        lastMessageTime = ts;
+      });
+      break;
+    }
     case "receiveMessage":
       const sender = message.from || {};
       addMessage({
@@ -643,8 +665,8 @@ function buildMessageText() {
 
 function placeCaretAtEnd(el) {
     el.focus();
-    if (typeof window.getSelection != "undefined"
-            && typeof document.createRange != "undefined") {
+    if (typeof window.getSelection !== "undefined"
+            && typeof document.createRange !== "undefined") {
         var range = document.createRange();
         range.selectNodeContents(el);
         range.collapse(false);
@@ -659,7 +681,7 @@ function getCaretCharacterOffsetWithin(element) {
     var doc = element.ownerDocument || element.document;
     var win = doc.defaultView || doc.parentWindow;
     var sel;
-    if (typeof win.getSelection != "undefined") {
+    if (typeof win.getSelection !== "undefined") {
         sel = win.getSelection();
         if (sel.rangeCount > 0) {
             var range = win.getSelection().getRangeAt(0);

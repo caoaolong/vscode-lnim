@@ -133,6 +133,91 @@ export class ChatMessageManager {
     }
   }
 
+  public async getAllHistory(
+    limit: number = 100,
+    offset: number = 0
+  ): Promise<ChatMessageRecord[]> {
+    if (!fs.existsSync(this.dbFilePath)) {
+      return [];
+    }
+
+    try {
+      const content = fs.readFileSync(this.dbFilePath, "utf8");
+      const lines = content.split("\n");
+      const records: ChatMessageRecord[] = [];
+
+      for (const line of lines) {
+        if (!line.trim()) {
+          continue;
+        }
+        try {
+          const record = JSON.parse(line) as ChatMessageRecord;
+          records.push(record);
+        } catch (e) {
+          // Ignore malformed lines
+        }
+      }
+
+      // Sort by createdAt ASC so older messages appear first
+      records.sort((a, b) => a.createdAt - b.createdAt);
+
+      return records.slice(offset, offset + limit);
+    } catch (e) {
+      console.error("Failed to read all chat history:", e);
+      return [];
+    }
+  }
+
+  public async deleteHistory(peerKey: string): Promise<void> {
+    if (!fs.existsSync(this.dbFilePath)) {
+      return;
+    }
+
+    try {
+      const content = fs.readFileSync(this.dbFilePath, "utf8");
+      const lines = content.split("\n");
+      const newLines: string[] = [];
+
+      for (const line of lines) {
+        if (!line.trim()) {
+          continue;
+        }
+        try {
+          const record = JSON.parse(line) as ChatMessageRecord;
+          if (record.peerKey !== peerKey) {
+            newLines.push(line);
+          }
+        } catch (e) {
+          // Ignore malformed lines
+        }
+      }
+
+      const newContent = newLines.join("\n") + (newLines.length > 0 ? "\n" : "");
+      fs.writeFileSync(this.dbFilePath, newContent, "utf8");
+    } catch (e) {
+      console.error("Failed to delete chat history:", e);
+      throw e;
+    }
+  }
+
+  public async clearAllHistory(): Promise<void> {
+    if (!fs.existsSync(this.dbFilePath)) {
+      return;
+    }
+
+    try {
+      // Option 1: Delete the file
+      // fs.unlinkSync(this.dbFilePath);
+      
+      // Option 2: Truncate the file (safer if file is open? but fs.unlink is usually fine on Node)
+      // Let's truncate to be safe with file handles potentially
+      fs.writeFileSync(this.dbFilePath, "", "utf8");
+    } catch (e) {
+      console.error("Failed to clear all chat history:", e);
+      throw e;
+    }
+  }
+
   public async close(): Promise<void> {
     // No explicit connection to close for NDJSON file append
   }
