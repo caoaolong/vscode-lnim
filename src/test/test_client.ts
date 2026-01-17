@@ -1,6 +1,5 @@
 import * as dgram from "dgram";
 import * as readline from "readline";
-import { LinkMessage } from "../lnim_message";
 
 // 全局变量配置
 const CLIENT_IP = "192.168.10.21"; // 本机监听地址
@@ -62,7 +61,7 @@ function printBanner() {
   console.log(`当前默认目标: ${remoteIp}:${remotePort}`);
   console.log("指令说明：");
   console.log("  直接输入内容 -> 发送 Chat 消息给默认目标");
-  console.log("  /link        -> 发送 Link 探测消息给默认目标");
+  console.log("  /link        -> 发送 link 探测消息给默认目标");
   console.log("  /target <ip> <port> -> 修改默认目标地址");
   console.log("  /send <ip> <port> <msg> -> 向指定地址发送一次性消息");
   console.log("  /quit        -> 退出客户端");
@@ -125,18 +124,19 @@ rl.on("line", (line) => {
 });
 
 function sendLink(ip: string, port: number) {
-  const payload: LinkMessage = {
+  const payload = {
     type: "link",
     from: getClientId(),
-    linkType: "request",
+    linkType: "request" as const,
+    timestamp: Date.now(),
   };
   const buf = Buffer.from(JSON.stringify(payload), "utf8");
   udpClient.send(buf, port, ip, (err) => {
     if (err) {
-      errorLog(`发送 LinkMessage 到 ${ip}:${port} 失败: ${err.message}`);
+      errorLog(`发送 link 消息到 ${ip}:${port} 失败: ${err.message}`);
     } else {
       log(
-        `[${new Date().toLocaleTimeString()}] 已向 ${ip}:${port} 发送 LinkMessage`
+        `[${new Date().toLocaleTimeString()}] 已向 ${ip}:${port} 发送 link 消息`
       );
     }
   });
@@ -147,6 +147,7 @@ function sendChat(message: string, ip: string, port: number) {
     type: "chat",
     from: getClientId(),
     message,
+		timestamp: Date.now(),
   };
   const buf = Buffer.from(JSON.stringify(payload), "utf8");
   udpClient.send(buf, port, ip, (err) => {
@@ -178,20 +179,18 @@ udpClient.on("message", (data, rinfo) => {
       return;
     }
 
-    // 处理 LinkMessage
+    // 处理 type 为 link 的消息
     if (payload && payload.type === "link") {
-      const linkMsg = payload as LinkMessage;
+      const linkMsg = payload as any;
       if (linkMsg.linkType !== "request" && linkMsg.linkType !== "reply") {
-        log(
-          `[${new Date().toLocaleTimeString()}] 收到未知类型的 LinkMessage: ${JSON.stringify(
-            linkMsg
-          )}`
-        );
+        log(`[${new Date().toLocaleTimeString()}] 收到未知类型的 link 消息: ${JSON.stringify(
+          linkMsg
+        )}`);
         return;
       }
       const isReply = linkMsg.linkType === "reply";
       log(
-        `[${new Date().toLocaleTimeString()}] 收到 LinkMessage 来自 ${
+        `[${new Date().toLocaleTimeString()}] 收到 link 消息来自 ${
           rinfo.address
         }:${rinfo.port} (ID: ${linkMsg.from}, Type: ${linkMsg.linkType})`
       );
@@ -199,24 +198,21 @@ udpClient.on("message", (data, rinfo) => {
       if (!isReply) {
         log(payload);
 
-        // 发送 Reply 类型的 LinkMessage
-        const replyPayload: LinkMessage = {
+        // 发送 Reply 类型的 link 消息
+        const replyPayload = {
           type: "link",
           from: getClientId(),
-          linkType: "reply",
+          linkType: "reply" as const,
+          timestamp: Date.now(),
         };
 
         const replyBuf = Buffer.from(JSON.stringify(replyPayload), "utf8");
         udpClient.send(replyBuf, rinfo.port, rinfo.address, (err) => {
           if (err) {
-            errorLog(
-              `发送 LinkMessage (reply) 到 ${rinfo.address}:${rinfo.port} 失败: ${err.message}`
-            );
+            errorLog(`发送 link 消息 (reply) 到 ${rinfo.address}:${rinfo.port} 失败: ${err.message}`);
           } else {
             log(
-              `[${new Date().toLocaleTimeString()}] 已向 ${rinfo.address}:${
-                rinfo.port
-              } 发送 LinkMessage (reply)`
+              `[${new Date().toLocaleTimeString()}] 已向 ${rinfo.address}:${rinfo.port} 发送 link 消息 (reply)`
             );
           }
         });
