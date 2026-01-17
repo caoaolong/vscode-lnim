@@ -127,6 +127,46 @@ body {
     gap: 5px;
 }
 
+#contact-select {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 4px;
+    max-height: 60px;
+    overflow-y: auto;
+}
+
+.contact-select-item {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    cursor: pointer;
+    border: 1px solid var(--vscode-input-border);
+    background-color: var(--vscode-editor-background);
+    color: var(--vscode-input-foreground);
+    max-width: 120px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.contact-select-item.selected {
+    background-color: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+    border-color: var(--vscode-focusBorder);
+}
+
+#contact-select::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+}
+
+#contact-select {
+    scrollbar-width: none;
+}
+
 #message-input {
     background-color: var(--vscode-input-background);
     color: var(--vscode-input-foreground);

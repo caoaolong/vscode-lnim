@@ -3,9 +3,6 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import { ChatMessageService } from "./chat_message_service";
-import {
-  ChatMessageProcessor
-} from "./chat_message_processor";
 import { ChatMessageManager } from "./chat_message_manager";
 import {
   ChatDataStore,
@@ -27,7 +24,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _currentPort: number;
   private readonly _store: ChatDataStore;
   private readonly _messageService: ChatMessageService;
-  private readonly _processor: ChatMessageProcessor;
   private readonly _messageManager: ChatMessageManager;
 
   constructor(
@@ -43,7 +39,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
     this._currentPort =
       this._userSettings.port || ChatViewProvider.DEFAULT_PORT;
-    this._processor = new ChatMessageProcessor();
     const context = this._context;
     this._messageManager = new ChatMessageManager(this._context.globalStorageUri.fsPath);
     this._messageService = new ChatMessageService(this._currentPort, {
@@ -228,18 +223,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           await this._messageService.clearAllHistory();
           break;
         }
-        case "getFilesAndFolders": {
-          // Default to root if no path provided, or handle specific path browsing
-          // This original handler was for flat search.
-          // We'll keep it for flat search if needed, or redirect to directory listing?
-          // The user wants "#" to show workspace folders and recurse.
-          // Let's implement a new message "getDirectoryContent" for that,
-          // but "getFilesAndFolders" was used for the initial "#" trigger.
-          // We will deprecate this or leave it for "search" mode if we implement search.
-          // But for now, let's just make sure we support the new requirement.
-          // Let's implement 'getDirectoryContent' separately.
-          break;
-        }
         case "getDirectoryContent": {
           const dirPath = data.path || "";
           try {
@@ -395,21 +378,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private handleSendMessage(data: any) {
-    const originalMsg = (data && (data.value ?? data.message)) || "";
-    const meta = this._processor.process(originalMsg, this._contacts);
-    if (!meta.contacts.length) {
-      return;
-    }
-    const cleanedMsg = meta.message;
-    if (!cleanedMsg) {
-      return;
-    }
-		console.log(cleanedMsg);
-    // this._messageService.sendChatMessage(
-    //   cleanedMsg,
-    //   this._userSettings,
-    //   meta.contacts
-    // );
+    console.log(data);
   }
 
   private getLocalIps(): string[] {

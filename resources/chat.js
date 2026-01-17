@@ -2,6 +2,7 @@ const vscode = acquireVsCodeApi();
 const $chatBox = $("#chat-box");
 const $input = $("#message-input");
 const $mentionSuggest = $("#mention-suggest");
+const $contactSelect = $("#contact-select");
 const $fileBtn = $("#file-btn");
 const $settingsBtn = $("#settings-btn");
 const $contactsBtn = $("#contacts-btn");
@@ -14,8 +15,7 @@ let currentUserSettings = {
 let lastMessageTime = 0;
 let contacts = [];
 let allContacts = [];
-let filesCache = [];
-let foldersCache = [];
+let selectedContacts = [];
 let mentionActive = false;
 let mentionQuery = "";
 let mentionItems = [];
@@ -115,7 +115,7 @@ $input.on("keydown", (e) => {
     }
     return;
   }
-  if (e.key === "@" || e.key === "#") {
+  if (e.key === "#") {
     setTimeout(() => {
       openMentionIfNeeded();
     }, 0);
@@ -212,6 +212,7 @@ window.addEventListener("message", (event) => {
     case "contactsSaved":
       contacts = message.contacts || [];
       allContacts = contacts.slice();
+      renderContactSelect();
       if (mentionActive) {
         filterMention();
       }
@@ -307,14 +308,108 @@ function sendMessage(text) {
     timestamp: now,
   });
 
+  const structured = buildStructuredMessage(text);
+
   vscode.postMessage({
     type: "sendMessage",
-    value: text,
+    value: structured.value,
+    files: structured.files,
+    target: structured.target,
     timestamp: now,
     nickname: currentUserSettings.nickname,
   });
 
   lastMessageTime = now;
+}
+
+function buildStructuredMessage(text) {
+  const files = {};
+  let fileIndex = 1;
+  const value = text.replace(/#([^\s#]+)/g, (match, filePath) => {
+    if (!filePath) {
+      return match;
+    }
+    const key = "file" + fileIndex;
+    fileIndex += 1;
+    files[key] = filePath;
+    return "<" + key + ">";
+  });
+
+  const targetsSet = new Set();
+  const targets = [];
+  (selectedContacts || []).forEach((c) => {
+    if (!c || !c.ip) {
+      return;
+    }
+    const port =
+      typeof c.port === "number" && c.port > 0
+        ? c.port
+        : currentUserSettings.port || 0;
+    const target = port > 0 ? c.ip + ":" + port : c.ip;
+    if (!targetsSet.has(target)) {
+      targetsSet.add(target);
+      targets.push(target);
+    }
+  });
+
+  return {
+    value,
+    files,
+    target: targets,
+  };
+}
+
+function renderContactSelect() {
+  if (!$contactSelect || $contactSelect.length === 0) {
+    return;
+  }
+  $contactSelect.empty();
+  if (!contacts || contacts.length === 0) {
+    return;
+  }
+  const selectedKeys = new Set(
+    (selectedContacts || []).map((c) => {
+      const ip = c.ip || "";
+      const port =
+        typeof c.port === "number" && c.port > 0 ? c.port : 0;
+      return ip + ":" + port;
+    })
+  );
+
+  contacts.forEach((c) => {
+    const ip = c.ip || "";
+    const port =
+      typeof c.port === "number" && c.port > 0 ? c.port : 0;
+    const key = ip + ":" + port;
+    const label = c.username || c.ip || "";
+
+    const $item = $("<div>").addClass("contact-select-item").text(label);
+    if (selectedKeys.has(key)) {
+      $item.addClass("selected");
+    }
+
+    $item.on("click", () => {
+      const idx = selectedContacts.findIndex((sc) => {
+        const sip = sc.ip || "";
+        const sport =
+          typeof sc.port === "number" && sc.port > 0 ? sc.port : 0;
+        return sip === ip && sport === port;
+      });
+      if (idx >= 0) {
+        selectedContacts.splice(idx, 1);
+        $item.removeClass("selected");
+      } else {
+        selectedContacts.push({
+          ip: c.ip,
+          port: c.port,
+          username: c.username,
+        });
+        $item.addClass("selected");
+      }
+    });
+
+    $contactSelect.append($item);
+  });
 }
 
 function checkAndAddTimestamp(currentTimestamp) {
@@ -419,9 +514,7 @@ function openMentionIfNeeded() {
   if (!mentionActive) {
     mentionActive = true;
     mentionIndex = -1;
-    if (mentionTrigger === "@") {
-      vscode.postMessage({ type: "getContacts" });
-    } else if (mentionTrigger === "#") {
+    if (mentionTrigger === "#") {
       currentBrowsePath = "";
       vscode.postMessage({ type: "getDirectoryContent", path: "" });
     }
@@ -452,19 +545,13 @@ function getCurrentMentionQuery() {
   }
   const before = text.slice(0, caret);
 
-  const at = before.lastIndexOf("@");
   const hash = before.lastIndexOf("#");
 
   let index = -1;
   let trigger = "";
 
-  if (at > hash) {
-    index = at;
-    trigger = "@";
-  } else {
-    index = hash;
-    trigger = "#";
-  }
+  index = hash;
+  trigger = "#";
 
   if (index === -1) {
     return null;
@@ -489,14 +576,7 @@ function filterMention() {
   const q = mentionQuery.toLowerCase();
   let sourceItems = [];
 
-  if (mentionTrigger === "@") {
-    sourceItems = (allContacts || []).map((c) => ({
-      type: "contact",
-      label: c.username,
-      value: c.username,
-      detail: c.ip,
-    }));
-  } else if (mentionTrigger === "#") {
+  if (mentionTrigger === "#") {
     sourceItems = directoryItems;
   }
 
