@@ -1,6 +1,6 @@
 import * as dgram from "dgram";
 import * as readline from "readline";
-import { LinkMessage } from "./lnim_message";
+import { LinkMessage } from "../lnim_message";
 
 // 全局变量配置
 const CLIENT_IP = "192.168.10.21"; // 本机监听地址

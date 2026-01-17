@@ -2,7 +2,7 @@ const vscode = acquireVsCodeApi();
 const $chatBox = $("#chat-box");
 const $input = $("#message-input");
 const $mentionSuggest = $("#mention-suggest");
-const $imageBtn = $("#image-btn");
+const $fileBtn = $("#file-btn");
 const $settingsBtn = $("#settings-btn");
 const $contactsBtn = $("#contacts-btn");
 
@@ -73,6 +73,22 @@ $input.on("keydown", (e) => {
           });
           return;
         }
+      }
+    }
+    if (e.key === "ArrowLeft") {
+      if (mentionTrigger === "#" && currentBrowsePath) {
+        e.preventDefault();
+        const parts = currentBrowsePath.split("/").filter((x) => x);
+        if (parts.length > 0) {
+          parts.pop();
+        }
+        currentBrowsePath = parts.join("/");
+        mentionQuery = "";
+        vscode.postMessage({
+          type: "getDirectoryContent",
+          path: currentBrowsePath,
+        });
+        return;
       }
     }
     if (e.key === "Enter") {
@@ -158,43 +174,8 @@ $input.on("input", () => {
   }
 });
 
-$imageBtn.on("click", () => {
+$fileBtn.on("click", () => {
   vscode.postMessage({ type: "selectImage" });
-});
-
-$input.on("dragover", (e) => {
-  e.preventDefault();
-  e.stopPropagation();
-});
-$input.on("drop", (e) => {
-  e.preventDefault();
-  e.stopPropagation();
-  if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-    const file = e.dataTransfer.files[0];
-    let path = file.path;
-    if (path) {
-      let type = "file";
-      if (!file.type && !path.includes(".")) {
-        type = "folder";
-      }
-      if (file.type && file.type.startsWith("image/")) {
-        type = "image";
-      }
-      const label = file.name || path.split(/[\/\\]/).pop();
-      const item = { type, value: path, label: label };
-      insertTagAtCursor(item);
-    }
-    return;
-  }
-  const text = e.dataTransfer.getData("text/plain");
-  if (text && (text.includes("/") || text.includes("\\"))) {
-    const label = text.split(/[\/\\]/).pop();
-    const type = /\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(text)
-      ? "image"
-      : "file";
-    const item = { type, value: text, label: label };
-    insertTagAtCursor(item);
-  }
 });
 
 function insertTagAtCursor(item) {
@@ -254,12 +235,23 @@ window.addEventListener("message", (event) => {
       }
       break;
     }
+    case "insertPathTag":
+      if (message.item) {
+        insertTagAtCursor(message.item);
+      }
+      break;
     case "imageSelected":
       if (message.path) {
+        const value = message.path;
+        const label = message.label || value.split(/[\/\\]/).pop();
+        let type = "file";
+        if (/\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(value)) {
+          type = "image";
+        }
         insertTagAtCursor({
-          type: "image",
-          value: message.path,
-          label: message.label || message.path.split("/").pop(),
+          type,
+          value,
+          label,
         });
       }
       break;
@@ -382,6 +374,35 @@ function renderMessageContent(container, text) {
       $container.append(tag);
       if (suffix) {
         $container.append(document.createTextNode(suffix));
+      }
+    } else if (part[0] === "#" && part.length > 1) {
+      let filePath = part.slice(1);
+      let suffix = "";
+      const m = filePath.match(/^([^\s.,;:!?]+)([.,;:!?]*)$/);
+      if (m) {
+        filePath = m[1];
+        suffix = m[2];
+      }
+      if (filePath) {
+        const label = filePath.split(/[\/\\]/).pop();
+        let type = "file";
+        if (!filePath.includes(".")) {
+          type = "folder";
+        }
+        if (/\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(filePath)) {
+          type = "image";
+        }
+        const item = { type, value: filePath, label };
+        const tag = createMentionTag(item, {
+          closable: false,
+          source: "message",
+        });
+        $container.append(tag);
+        if (suffix) {
+          $container.append(document.createTextNode(suffix));
+        }
+      } else {
+        $container.append(document.createTextNode(part));
       }
     } else {
       $container.append(document.createTextNode(part));
@@ -526,18 +547,21 @@ function renderMention() {
       $div.append($t);
     }
 
-    $div
-      .on("mouseenter", () => {
-        mentionIndex = idx;
-        renderMention();
-      })
-      .on("mousedown", (e) => {
-        e.preventDefault();
-      })
-      .on("click", () => {
-        applyMention(mentionItems[idx]);
-        closeMention();
-      });
+    if (mentionTrigger !== "#") {
+      $div
+        .on("mouseenter", () => {
+          mentionIndex = idx;
+          renderMention();
+        })
+        .on("mousedown", (e) => {
+          e.preventDefault();
+        })
+        .on("click", () => {
+          const item = mentionItems[idx];
+          applyMention(item);
+          closeMention();
+        });
+    }
     $mentionSuggest.append($div);
   });
 }
@@ -660,36 +684,81 @@ function resolveMentionItem(val, trigger) {
 }
 
 function buildMessageText() {
-    return $input[0].innerText;
+  const root = $input[0];
+  if (!root) {
+    return "";
+  }
+
+  function collect(node) {
+    if (!node) {
+      return "";
+    }
+    if (node.nodeType === Node.TEXT_NODE) {
+      return node.data;
+    }
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      const el = node;
+      if (el.classList && el.classList.contains("mention-tag")) {
+        const type = el.getAttribute("data-type") || "";
+        const value = el.getAttribute("data-value") || "";
+        if (!value) {
+          return "";
+        }
+        if (type === "contact") {
+          return "@" + value + " ";
+        }
+        return "#" + value + " ";
+      }
+      let text = "";
+      const children = el.childNodes;
+      for (let i = 0; i < children.length; i++) {
+        text += collect(children[i]);
+      }
+      if (el.tagName === "BR" || el.tagName === "DIV" || el.tagName === "P") {
+        text += " ";
+      }
+      return text;
+    }
+    return "";
+  }
+
+  let result = "";
+  const children = root.childNodes;
+  for (let i = 0; i < children.length; i++) {
+    result += collect(children[i]);
+  }
+  return result;
 }
 
 function placeCaretAtEnd(el) {
-    el.focus();
-    if (typeof window.getSelection !== "undefined"
-            && typeof document.createRange !== "undefined") {
-        var range = document.createRange();
-        range.selectNodeContents(el);
-        range.collapse(false);
-        var sel = window.getSelection();
-        sel.removeAllRanges();
-        sel.addRange(range);
-    }
+  el.focus();
+  if (
+    typeof window.getSelection !== "undefined" &&
+    typeof document.createRange !== "undefined"
+  ) {
+    var range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(false);
+    var sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
 }
 
 function getCaretCharacterOffsetWithin(element) {
-    var caretOffset = 0;
-    var doc = element.ownerDocument || element.document;
-    var win = doc.defaultView || doc.parentWindow;
-    var sel;
-    if (typeof win.getSelection !== "undefined") {
-        sel = win.getSelection();
-        if (sel.rangeCount > 0) {
-            var range = win.getSelection().getRangeAt(0);
-            var preCaretRange = range.cloneRange();
-            preCaretRange.selectNodeContents(element);
-            preCaretRange.setEnd(range.endContainer, range.endOffset);
-            caretOffset = preCaretRange.toString().length;
-        }
+  var caretOffset = 0;
+  var doc = element.ownerDocument || element.document;
+  var win = doc.defaultView || doc.parentWindow;
+  var sel;
+  if (typeof win.getSelection !== "undefined") {
+    sel = win.getSelection();
+    if (sel.rangeCount > 0) {
+      var range = win.getSelection().getRangeAt(0);
+      var preCaretRange = range.cloneRange();
+      preCaretRange.selectNodeContents(element);
+      preCaretRange.setEnd(range.endContainer, range.endOffset);
+      caretOffset = preCaretRange.toString().length;
     }
-    return caretOffset;
+  }
+  return caretOffset;
 }

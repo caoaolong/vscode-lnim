@@ -75,7 +75,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.options = {
       // Allow scripts in the webview
       enableScripts: true,
-
+			enableCommandUris: true,
       localResourceRoots: [
         this._extensionUri,
         vscode.Uri.joinPath(this._extensionUri, "node_modules"),
@@ -214,9 +214,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
           }
           await this._messageService.deleteHistory(c);
-          vscode.window.showInformationMessage(
-            `Chat history with ${c.username} cleared.`
-          );
           break;
         }
         case "clearAllChatHistory": {
@@ -229,9 +226,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
           }
           await this._messageService.clearAllHistory();
-          vscode.window.showInformationMessage(
-            "All chat history has been cleared."
-          );
           break;
         }
         case "getFilesAndFolders": {
@@ -314,9 +308,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             canSelectFiles: true,
             canSelectFolders: false,
             canSelectMany: false,
-            filters: {
-              Images: ["png", "jpg", "jpeg", "gif", "webp", "bmp"],
-            },
           });
           if (uris && uris.length > 0) {
             // We need to pass a path that the webview can display or reference
@@ -354,6 +345,42 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
+  public async sendPathsToChat(uris: vscode.Uri[]): Promise<void> {
+    if (!uris || uris.length === 0) {
+      return;
+    }
+    const webviewView = this._currentWebviewView;
+    if (!webviewView) {
+      vscode.window.showInformationMessage("请先打开 LNIM Chat 视图");
+      return;
+    }
+    for (const uri of uris) {
+      try {
+        const stat = await vscode.workspace.fs.stat(uri);
+        const type =
+          stat.type === vscode.FileType.Directory ? "folder" : "file";
+        let value = vscode.workspace.asRelativePath(uri, false);
+        if (!value || value === uri.fsPath) {
+          value = uri.fsPath;
+        }
+        value = value.replace(/\\/g, "/");
+        const label = path.basename(value);
+        webviewView.webview.postMessage({
+          type: "insertPathTag",
+          item: {
+            type,
+            value,
+            label,
+          },
+        });
+      } catch {
+        vscode.window.showErrorMessage(
+          `无法发送资源: ${uri.fsPath || uri.toString()}`
+        );
+      }
+    }
+  }
+
   private async sendChatHistoryToWebview(webview: vscode.Webview) {
     try {
       const records = await this._messageManager.getAllHistory(100, 0);
@@ -371,21 +398,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const originalMsg = (data && (data.value ?? data.message)) || "";
     const meta = this._processor.process(originalMsg, this._contacts);
     if (!meta.contacts.length) {
-      vscode.window.showErrorMessage(
-        "消息中没有找到任何有效的联系人，请确认已使用 @用户名"
-      );
       return;
     }
     const cleanedMsg = meta.message;
     if (!cleanedMsg) {
-      vscode.window.showErrorMessage("消息内容为空，请输入要发送的消息");
       return;
     }
-    this._messageService.sendChatMessage(
-      cleanedMsg,
-      this._userSettings,
-      meta.contacts
-    );
+		console.log(cleanedMsg);
+    // this._messageService.sendChatMessage(
+    //   cleanedMsg,
+    //   this._userSettings,
+    //   meta.contacts
+    // );
   }
 
   private getLocalIps(): string[] {
