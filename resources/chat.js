@@ -109,11 +109,12 @@ $input.on("keydown", (e) => {
     e.preventDefault();
     const message = buildMessageText().trim();
     if (message) {
-      sendMessage(message);
-      $input.html("");
-      closeMention();
-    }
-    return;
+      if (sendMessage(message)) {
+        $input.html("");
+        closeMention();
+			}
+			return;
+		}
   }
   if (e.key === "#") {
     setTimeout(() => {
@@ -298,6 +299,15 @@ $(window).on("keydown", (e) => {
 });
 
 function sendMessage(text) {
+  const structured = buildStructuredMessage(text);
+  if (!structured.target || structured.target.length === 0) {
+    vscode.postMessage({
+      type: "warning",
+      warningType: "noTargetSelected",
+    });
+    return false;
+  }
+
   const now = Date.now();
   checkAndAddTimestamp(now);
 
@@ -307,8 +317,6 @@ function sendMessage(text) {
     nickname: currentUserSettings.nickname,
     timestamp: now,
   });
-
-  const structured = buildStructuredMessage(text);
 
   vscode.postMessage({
     type: "sendMessage",
@@ -320,12 +328,13 @@ function sendMessage(text) {
   });
 
   lastMessageTime = now;
+  return true;
 }
 
 function buildStructuredMessage(text) {
   const files = {};
   let fileIndex = 1;
-  const value = text.replace(/#([^\s#]+)/g, (match, filePath) => {
+  const value = text.replace(/\{#([^}]+)\}/g, (match, filePath) => {
     if (!filePath) {
       return match;
     }
@@ -370,16 +379,14 @@ function renderContactSelect() {
   const selectedKeys = new Set(
     (selectedContacts || []).map((c) => {
       const ip = c.ip || "";
-      const port =
-        typeof c.port === "number" && c.port > 0 ? c.port : 0;
+      const port = typeof c.port === "number" && c.port > 0 ? c.port : 0;
       return ip + ":" + port;
-    })
+    }),
   );
 
   contacts.forEach((c) => {
     const ip = c.ip || "";
-    const port =
-      typeof c.port === "number" && c.port > 0 ? c.port : 0;
+    const port = typeof c.port === "number" && c.port > 0 ? c.port : 0;
     const key = ip + ":" + port;
     const label = c.username || c.ip || "";
 
@@ -391,8 +398,7 @@ function renderContactSelect() {
     $item.on("click", () => {
       const idx = selectedContacts.findIndex((sc) => {
         const sip = sc.ip || "";
-        const sport =
-          typeof sc.port === "number" && sc.port > 0 ? sc.port : 0;
+        const sport = typeof sc.port === "number" && sc.port > 0 ? sc.port : 0;
         return sip === ip && sport === port;
       });
       if (idx >= 0) {
@@ -427,7 +433,7 @@ function checkAndAddTimestamp(currentTimestamp) {
 
 function addMessage({ text, isSelf, nickname }) {
   const $container = $("<div>").addClass(
-    "message-container" + (isSelf ? " self" : " other")
+    "message-container" + (isSelf ? " self" : " other"),
   );
 
   const $nicknameDiv = $("<div>").addClass("nickname").text(nickname);
@@ -444,65 +450,56 @@ function addMessage({ text, isSelf, nickname }) {
 function renderMessageContent(container, text) {
   const $container = $(container);
   $container.empty();
-  const parts = text.split(/(\s+)/);
-  parts.forEach((part) => {
-    if (!part) {
-      return;
+  const pattern = /\{#([^}]+)\}/g;
+  let lastIndex = 0;
+  let match;
+
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      appendPlainSegment(text.slice(lastIndex, match.index));
     }
-    if (/^\s+$/.test(part)) {
-      $container.append(document.createTextNode(part));
-      return;
-    }
-    if (part[0] === "@" && part.length > 1) {
-      let name = part.slice(1);
-      let suffix = "";
-      const m = name.match(/^([^\s.,;:!?]+)([.,;:!?]*)$/);
-      if (m) {
-        name = m[1];
-        suffix = m[2];
+    const filePath = match[1] || "";
+    if (filePath) {
+      const label = filePath.split(/[\/\\]/).pop();
+      let type = "file";
+      if (!filePath.includes(".")) {
+        type = "folder";
       }
-      const item = resolveMentionItem(name);
+      if (/\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(filePath)) {
+        type = "image";
+      }
+      const item = { type, value: filePath, label };
       const tag = createMentionTag(item, {
         closable: false,
         source: "message",
       });
       $container.append(tag);
-      if (suffix) {
-        $container.append(document.createTextNode(suffix));
-      }
-    } else if (part[0] === "#" && part.length > 1) {
-      let filePath = part.slice(1);
-      let suffix = "";
-      const m = filePath.match(/^([^\s.,;:!?]+)([.,;:!?]*)$/);
-      if (m) {
-        filePath = m[1];
-        suffix = m[2];
-      }
-      if (filePath) {
-        const label = filePath.split(/[\/\\]/).pop();
-        let type = "file";
-        if (!filePath.includes(".")) {
-          type = "folder";
-        }
-        if (/\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(filePath)) {
-          type = "image";
-        }
-        const item = { type, value: filePath, label };
-        const tag = createMentionTag(item, {
-          closable: false,
-          source: "message",
-        });
-        $container.append(tag);
-        if (suffix) {
-          $container.append(document.createTextNode(suffix));
-        }
-      } else {
-        $container.append(document.createTextNode(part));
-      }
     } else {
-      $container.append(document.createTextNode(part));
+      $container.append(document.createTextNode(match[0]));
     }
-  });
+    lastIndex = pattern.lastIndex;
+  }
+
+  if (lastIndex < text.length) {
+    appendPlainSegment(text.slice(lastIndex));
+  }
+
+  function appendPlainSegment(segment) {
+    if (!segment) {
+      return;
+    }
+    const parts = segment.split(/(\s+)/);
+    parts.forEach((part) => {
+      if (!part) {
+        return;
+      }
+      if (/^\s+$/.test(part)) {
+        $container.append(document.createTextNode(part));
+        return;
+      }
+      $container.append(document.createTextNode(part));
+    });
+  }
 }
 
 function openMentionIfNeeded() {
@@ -581,7 +578,7 @@ function filterMention() {
   }
 
   mentionItems = sourceItems.filter(
-    (it) => !q || it.label.toLowerCase().includes(q)
+    (it) => !q || it.label.toLowerCase().includes(q),
   );
   if (mentionItems.length > 0 && mentionIndex === -1) {
     mentionIndex = 0;
@@ -601,16 +598,16 @@ function renderMention() {
 
   mentionItems.slice(0, 50).forEach((it, idx) => {
     const $div = $("<div>").addClass(
-      "mention-item" + (idx === mentionIndex ? " active" : "")
+      "mention-item" + (idx === mentionIndex ? " active" : ""),
     );
     const iconClass =
       it.type === "contact"
         ? "codicon-account"
         : it.type === "folder"
-        ? "codicon-folder"
-        : it.type === "image"
-        ? "codicon-file-media"
-        : "codicon-file";
+          ? "codicon-folder"
+          : it.type === "image"
+            ? "codicon-file-media"
+            : "codicon-file";
     const $icon = $("<span>").addClass("codicon " + iconClass);
     const $label = $("<span>").text(it.label);
     $div.append($icon).append($label);
@@ -664,9 +661,8 @@ function applyMention(item) {
   const beforeText = textNode.data.slice(0, range.startOffset);
   const afterText = textNode.data.slice(range.startOffset);
 
-  const atIndex = beforeText.lastIndexOf("@");
   const hashIndex = beforeText.lastIndexOf("#");
-  const index = Math.max(atIndex, hashIndex);
+  const index = hashIndex;
 
   if (index === -1) {
     return;
@@ -697,21 +693,13 @@ function applyMention(item) {
 }
 
 function createMentionTag(item, opts) {
-  const trigger = item.type === "contact" ? "@" : "#";
-  const iconClass =
-    item.type === "contact"
-      ? "codicon-account"
-      : item.type === "folder"
-      ? "codicon-folder"
-      : item.type === "image"
-      ? "codicon-file-media"
-      : "codicon-file";
+  const iconClass = "codicon-file";
 
   const $span = $("<span>")
     .addClass("mention-tag")
     .attr("data-type", item.type)
     .attr("data-value", item.value)
-    .attr("data-trigger", trigger);
+    .attr("data-trigger", "#");
 
   if (opts && opts.source === "input") {
     $span.attr("contenteditable", "false");
@@ -720,7 +708,7 @@ function createMentionTag(item, opts) {
   const $icon = $("<span>").addClass("codicon " + iconClass);
   const $label = $("<span>")
     .addClass("label")
-    .text((item.type === "contact" ? "@" : "") + item.label);
+    .text(item.label);
 
   $span.append($icon).append($label);
 
@@ -748,21 +736,6 @@ function createMentionTag(item, opts) {
   return $span;
 }
 
-function resolveMentionItem(val, trigger) {
-  if (!trigger || trigger === "@") {
-    const c = (allContacts || []).find((x) => x.username === val);
-    if (c) {
-      return {
-        type: "contact",
-        value: c.username,
-        label: c.username,
-        detail: c.ip,
-      };
-    }
-  }
-  return null;
-}
-
 function buildMessageText() {
   const root = $input[0];
   if (!root) {
@@ -779,15 +752,11 @@ function buildMessageText() {
     if (node.nodeType === Node.ELEMENT_NODE) {
       const el = node;
       if (el.classList && el.classList.contains("mention-tag")) {
-        const type = el.getAttribute("data-type") || "";
         const value = el.getAttribute("data-value") || "";
         if (!value) {
           return "";
         }
-        if (type === "contact") {
-          return "@" + value + " ";
-        }
-        return "#" + value + " ";
+        return "{#" + value + "}";
       }
       let text = "";
       const children = el.childNodes;

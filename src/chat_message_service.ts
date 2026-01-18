@@ -11,7 +11,7 @@ export interface ChatMessage {
   type: "chat" | "file" | "link";
   from: string;
   timestamp: number;
-  value?: string;
+  value?: string | Buffer;
   target?: string[];
   files?: string[];
   linkType?: "request" | "reply";

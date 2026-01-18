@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import { ChatMessageService } from "./chat_message_service";
+import { ChatMessage, ChatMessageService } from "./chat_message_service";
 import { ChatMessageManager } from "./chat_message_manager";
 import {
   ChatDataStore,
@@ -132,6 +132,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             type: "updateContacts",
             contacts: this._contactManager.getContacts(),
           });
+          break;
+        }
+        case "warning": {
+          const warningType = (data as any).warningType;
+          if (warningType === "noTargetSelected") {
+            vscode.window.showWarningMessage("请先在上方选择至少一个联系人后再发送消息");
+          } else if (typeof (data as any).message === "string" && (data as any).message) {
+            vscode.window.showWarningMessage((data as any).message);
+          }
           break;
         }
         case "scanContacts": {
@@ -317,11 +326,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         case "tagClicked": {
           const item = data.item;
-          const label = item?.label ?? item?.value ?? "";
           const tagType = item?.type ?? "mention";
-          vscode.window.showInformationMessage(
-            `Tag clicked: ${label} (${tagType})`
-          );
+          if (tagType === "file") {
+            const value: string | undefined = item?.value;
+            const wsFolders = vscode.workspace.workspaceFolders;
+            let absolutePath = value || "";
+            if (
+              value &&
+              wsFolders &&
+              wsFolders.length > 0 &&
+              !path.isAbsolute(value)
+            ) {
+              absolutePath = path.join(wsFolders[0].uri.fsPath, value);
+            }
+            vscode.window.showInformationMessage(absolutePath);
+          } else {
+            const label = item?.label ?? item?.value ?? "";
+            vscode.window.showInformationMessage(label);
+          }
           break;
         }
         case "sendMessage": {
@@ -381,7 +403,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private handleSendMessage(data: any) {
+  private handleSendMessage(data: ChatMessage) {
+    const wsFolders = vscode.workspace.workspaceFolders;
+    if (wsFolders && wsFolders.length > 0 && (data as any).files) {
+      const root = wsFolders[0].uri.fsPath;
+      const originalFiles = (data as any).files as Record<string, string>;
+      const normalizedFiles: Record<string, string> = {};
+      for (const key of Object.keys(originalFiles)) {
+        const value = originalFiles[key];
+        if (!value) {
+          continue;
+        }
+        const absolutePath = path.isAbsolute(value)
+          ? value
+          : path.join(root, value);
+        normalizedFiles[key] = absolutePath;
+      }
+      (data as any).files = normalizedFiles;
+    }
     console.log(data);
   }
 

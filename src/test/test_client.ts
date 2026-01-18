@@ -1,16 +1,23 @@
 import * as dgram from "dgram";
 import * as readline from "readline";
 
-// 全局变量配置
-const CLIENT_IP = "192.168.10.21"; // 本机监听地址
-const CLIENT_PORT = 18081; // 测试客户端端口
-const CLIENT_USERNAME = "TestClient"; // 测试客户端用户名
+interface ChatMessage {
+  type: "chat" | "file" | "link";
+  from: string;
+  timestamp: number;
+  value?: string | Buffer;
+  target?: string[];
+  files?: string[];
+  linkType?: "request" | "reply";
+}
 
-// 目标服务器配置（LNIM 扩展所在的主机）
+const CLIENT_IP = "192.168.10.21";
+const CLIENT_PORT = 18081;
+const CLIENT_USERNAME = "TestClient";
+
 let remoteIp = "192.168.10.21";
 let remotePort = 18080;
 
-// 生成客户端 ID
 function getClientId(): string {
   return Buffer.from(
     `${CLIENT_USERNAME}:${CLIENT_IP}:${CLIENT_PORT}`,
@@ -18,17 +25,14 @@ function getClientId(): string {
   ).toString("base64");
 }
 
-// 创建 UDP Socket
 const udpClient = dgram.createSocket("udp4");
 
-// 简单 TUI：使用 readline 实现输入与消息显示
 const rl = readline.createInterface({
   input: process.stdin,
   output: process.stdout,
   prompt: "> ",
 });
 
-// 封装日志输出，避免打断输入行
 function log(msg: string) {
   readline.clearLine(process.stdout, 0);
   readline.cursorTo(process.stdout, 0);
@@ -100,7 +104,7 @@ rl.on("line", (line) => {
         remotePort = parseInt(parts[2], 10);
         log(`默认目标已更新为: ${remoteIp}:${remotePort}`);
       }
-      return; // log already prompts
+      return;
     }
 
     if (cmd === "/send") {
@@ -120,15 +124,14 @@ rl.on("line", (line) => {
   }
 
   sendChat(text, remoteIp, remotePort);
-  // sendChat logs, which prompts
 });
 
 function sendLink(ip: string, port: number) {
-  const payload = {
+  const payload: ChatMessage = {
     type: "link",
     from: getClientId(),
-    linkType: "request" as const,
     timestamp: Date.now(),
+    linkType: "request",
   };
   const buf = Buffer.from(JSON.stringify(payload), "utf8");
   udpClient.send(buf, port, ip, (err) => {
@@ -143,11 +146,11 @@ function sendLink(ip: string, port: number) {
 }
 
 function sendChat(message: string, ip: string, port: number) {
-  const payload = {
+  const payload: ChatMessage = {
     type: "chat",
     from: getClientId(),
-    message,
-		timestamp: Date.now(),
+    timestamp: Date.now(),
+    value: message,
   };
   const buf = Buffer.from(JSON.stringify(payload), "utf8");
   udpClient.send(buf, port, ip, (err) => {
@@ -161,55 +164,51 @@ function sendChat(message: string, ip: string, port: number) {
   });
 }
 
-// 处理收到的消息
 udpClient.on("message", (data, rinfo) => {
   try {
     const text = data.toString("utf8");
 
-    // 尝试解析 JSON
     let payload: any;
     try {
       payload = JSON.parse(text);
     } catch {
       log(
-        `[${new Date().toLocaleTimeString()}] 收到来自 ${rinfo.address}:${
-          rinfo.port
-        } 的非 JSON 消息: ${text}`
+        `[${new Date().toLocaleTimeString()}] 收到来自 ${rinfo.address}:${rinfo.port} 的非 JSON 消息: ${text}`
       );
       return;
     }
 
-    // 处理 type 为 link 的消息
-    if (payload && payload.type === "link") {
-      const linkMsg = payload as any;
-      if (linkMsg.linkType !== "request" && linkMsg.linkType !== "reply") {
-        log(`[${new Date().toLocaleTimeString()}] 收到未知类型的 link 消息: ${JSON.stringify(
-          linkMsg
-        )}`);
+    const msg = payload as ChatMessage;
+
+    if (msg.type === "link") {
+      if (msg.linkType !== "request" && msg.linkType !== "reply") {
+        log(
+          `[${new Date().toLocaleTimeString()}] 收到未知类型的 link 消息: ${JSON.stringify(
+            msg
+          )}`
+        );
         return;
       }
-      const isReply = linkMsg.linkType === "reply";
+      const isReply = msg.linkType === "reply";
       log(
         `[${new Date().toLocaleTimeString()}] 收到 link 消息来自 ${
           rinfo.address
-        }:${rinfo.port} (ID: ${linkMsg.from}, Type: ${linkMsg.linkType})`
+        }:${rinfo.port} (ID: ${msg.from}, Type: ${msg.linkType})`
       );
 
       if (!isReply) {
-        log(payload);
-
-        // 发送 Reply 类型的 link 消息
-        const replyPayload = {
+        const replyPayload: ChatMessage = {
           type: "link",
           from: getClientId(),
-          linkType: "reply" as const,
           timestamp: Date.now(),
+          linkType: "reply",
         };
-
         const replyBuf = Buffer.from(JSON.stringify(replyPayload), "utf8");
         udpClient.send(replyBuf, rinfo.port, rinfo.address, (err) => {
           if (err) {
-            errorLog(`发送 link 消息 (reply) 到 ${rinfo.address}:${rinfo.port} 失败: ${err.message}`);
+            errorLog(
+              `发送 link 消息 (reply) 到 ${rinfo.address}:${rinfo.port} 失败: ${err.message}`
+            );
           } else {
             log(
               `[${new Date().toLocaleTimeString()}] 已向 ${rinfo.address}:${rinfo.port} 发送 link 消息 (reply)`
@@ -220,23 +219,19 @@ udpClient.on("message", (data, rinfo) => {
       return;
     }
 
-    // 处理 ChatMessage
-    if (payload && payload.type === "chat") {
-      const nickname =
-        (payload.from && payload.from.nickname) || payload.from || "未知";
-      const msgText = payload.message || "";
+    if (msg.type === "chat") {
+      const nickname = msg.from || "未知";
+      const msgText =
+        typeof msg.value === "string" ? msg.value : "[二进制数据]";
       log(
-        `[${new Date().toLocaleTimeString()}] ${nickname}@${rinfo.address}:${
-          rinfo.port
-        }: ${msgText}`
+        `[${new Date().toLocaleTimeString()}] ${nickname}@${rinfo.address}:${rinfo.port}: ${msgText}`
       );
       return;
     }
 
-    // 处理其他类型的消息
     log(
       `[${new Date().toLocaleTimeString()}] 收到 ${
-        payload.type || "未知"
+        msg.type || "未知"
       } 消息来自 ${rinfo.address}:${rinfo.port}\n  ${JSON.stringify(
         payload,
         null,
@@ -248,7 +243,6 @@ udpClient.on("message", (data, rinfo) => {
   }
 });
 
-// 处理错误
 udpClient.on("error", (err) => {
   errorLog(`UDP 客户端错误: ${err.message}`);
 });
@@ -262,12 +256,10 @@ function shutdown() {
   });
 }
 
-// 启动 UDP 服务器并进入 TUI 主循环
 udpClient.bind(CLIENT_PORT, CLIENT_IP, () => {
   printBanner();
 });
 
-// 优雅退出处理
 process.on("SIGINT", () => {
   shutdown();
 });
