@@ -287,7 +287,6 @@ export class ChatMessageService {
       });
       this.udpServer.bind(targetPort, () => {
         this.currentPort = targetPort;
-        console.log(`UDP server listening on port ${targetPort}`);
       });
     } catch (e) {
       console.error("Failed to start UDP server:", e);

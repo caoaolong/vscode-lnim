@@ -43,7 +43,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._contactManager.resetAllStatuses();
     this._currentPort =
       this._userSettings.port || ChatViewProvider.DEFAULT_PORT;
-    const context = this._context;
     this._messageManager = new ChatMessageManager(this._context.globalStorageUri.fsPath);
     this._messageService = new ChatMessageService(this._currentPort, {
       view: this._view,
@@ -52,7 +51,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       onLinkMessageReceived: (result) => {
         this.handleLinkMessageReceived(result);
       },
-      context,
+      context: this._context,
     });
   }
 
@@ -63,7 +62,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   public resolveWebviewView(
     webviewView: vscode.WebviewView,
-    context: vscode.WebviewViewResolveContext,
+    _context: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken
   ) {
     this._view = webviewView;
@@ -82,8 +81,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     };
 
     webviewView.webview.html = this._getHtmlForWebview(webviewView.webview, "chat");
-    this.sendChatHistoryToWebview(webviewView.webview);
-
     webviewView.webview.onDidReceiveMessage(async (data) => {
       switch (data.type) {
         case "navigate": {
@@ -186,7 +183,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         }
         case "getContactsStatus": {
-          console.log("获取联系人在线状态");
           break;
         }
         case "checkContactLink": {
@@ -339,7 +335,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             ) {
               absolutePath = path.join(wsFolders[0].uri.fsPath, value);
             }
-            vscode.window.showInformationMessage(absolutePath);
+            const from = data.from;
+            if (from) {
+              vscode.window.showInformationMessage(`${from}: ${absolutePath}`);
+            }
           } else {
             const label = item?.label ?? item?.value ?? "";
             vscode.window.showInformationMessage(label);

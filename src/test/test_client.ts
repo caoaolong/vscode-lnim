@@ -11,11 +11,11 @@ interface ChatMessage {
   linkType?: "request" | "reply";
 }
 
-const CLIENT_IP = "192.168.10.21";
+const CLIENT_IP = "10.110.4.12";
 const CLIENT_PORT = 18081;
 const CLIENT_USERNAME = "TestClient";
 
-let remoteIp = "192.168.10.21";
+let remoteIp = "10.110.4.12";
 let remotePort = 18080;
 
 function getClientId(): string {

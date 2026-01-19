@@ -25,7 +25,7 @@ let currentBrowsePath = "";
 let directoryItems = [];
 
 // Initialize
-$(document).ready(() => {
+$(() => {
   vscode.postMessage({ type: "getSettings" });
   vscode.postMessage({ type: "getContacts" });
   vscode.postMessage({ type: "getChatHistory" });
@@ -265,27 +265,27 @@ window.addEventListener("message", (event) => {
         const ts =
           typeof record.createdAt === "number" ? record.createdAt : Date.now();
         checkAndAddTimestamp(ts);
-        addMessage({
-          text: record.content,
-          isSelf: record.direction === "outgoing",
-          nickname:
-            record.direction === "outgoing"
-              ? selfNickname
-              : record.peerUsername || "Unknown",
-          timestamp: ts,
-        });
+          addMessage({
+            from: record.peerKey,
+            text: record.content,
+            isSelf: record.direction === "outgoing",
+            nickname:
+              record.direction === "outgoing"
+                ? selfNickname
+                : record.peerUsername || "Unknown",
+            timestamp: ts,
+          });
         lastMessageTime = ts;
       });
       break;
     }
     case "receiveMessage":
-			console.log(message);
-      addMessage({
-        text: message.message,
-        isSelf: false,
-        nickname: message.from,
-        timestamp: message.timestamp,
-      });
+        addMessage({
+          text: message.message,
+          isSelf: false,
+          nickname: message.from,
+          timestamp: message.timestamp,
+        });
       break;
   }
 });
@@ -431,7 +431,7 @@ function checkAndAddTimestamp(currentTimestamp) {
   }
 }
 
-function addMessage({ text, isSelf, nickname }) {
+function addMessage({ from, text, isSelf, nickname }) {
   const $container = $("<div>").addClass(
     "message-container" + (isSelf ? " self" : " other"),
   );
@@ -439,7 +439,7 @@ function addMessage({ text, isSelf, nickname }) {
   const $nicknameDiv = $("<div>").addClass("nickname").text(nickname);
 
   const $messageDiv = $("<div>").addClass("message");
-  renderMessageContent($messageDiv[0], text);
+  renderMessageContent($messageDiv[0], text, from);
 
   $container.append($nicknameDiv).append($messageDiv);
 
@@ -447,7 +447,7 @@ function addMessage({ text, isSelf, nickname }) {
   $chatBox.scrollTop($chatBox[0].scrollHeight);
 }
 
-function renderMessageContent(container, text) {
+function renderMessageContent(container, text, from) {
   const $container = $(container);
   $container.empty();
   const pattern = /\{#([^}]+)\}/g;
@@ -472,6 +472,7 @@ function renderMessageContent(container, text) {
       const tag = createMentionTag(item, {
         closable: false,
         source: "message",
+        from: from,
       });
       $container.append(tag);
     } else {
@@ -728,9 +729,10 @@ function createMentionTag(item, opts) {
     vscode.postMessage({
       type: "tagClicked",
       item: { type: item.type, value: item.value, label: item.label },
+      from: opts.from,
     });
     if (opts && opts.source === "input") {
-      $input.focus();
+      $input[0].focus();
     }
   });
   return $span;

@@ -33,10 +33,6 @@
     },
     "commands": [
       {
-        "command": "vscode-lnim.helloWorld",
-        "title": "Hello World"
-      },
-      {
         "command": "vscode-lnim.sendViaLnim",
         "title": "通过LNIM发送",
         "category": "LNIM"
