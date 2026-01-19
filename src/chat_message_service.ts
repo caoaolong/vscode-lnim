@@ -56,7 +56,7 @@ export class ChatMessageService {
     this.onLinkMessageReceived = options.onLinkMessageReceived;
     // 创建消息管理器
     this.messageManager = new ChatMessageManager(
-      options.context.globalStorageUri.fsPath
+      options.context.globalStorageUri.fsPath,
     );
     // 开启服务
     this.startUdpServer(this.currentPort);
@@ -81,43 +81,64 @@ export class ChatMessageService {
     this.startUdpServer(this.currentPort);
   }
 
-  public sendChatMessage(
-    text: string,
-    from: ChatUserSettings,
-    contacts: ChatContact[]
-  ) {
-    const timestamp = Date.now();
-    const payload = JSON.stringify({
+  public sendChatMessage(message: ChatMessage) {
+    if (!this.getSelfId) {
+      return;
+    }
+    const selfId = this.getSelfId();
+    const timestamp = message.timestamp || Date.now();
+    let text = "";
+    if (typeof message.value === "string") {
+      text = message.value;
+    } else if (message.value instanceof Buffer) {
+      text = message.value.toString("utf8");
+    }
+    const payload: ChatMessage = {
       type: "chat",
-      from,
-      message: text,
-    });
-    const buf = Buffer.from(payload, "utf8");
+      from: selfId,
+      timestamp,
+      value: text,
+      target: message.target,
+      files: message.files,
+    };
+    const buf = Buffer.from(JSON.stringify(payload), "utf8");
     if (!this.udpServer) {
       vscode.window.showErrorMessage("UDP 服务未启动，无法发送消息");
       return;
     }
-    for (const c of contacts) {
+    for (const c of message.target || []) {
+      const parts = c.split(":");
+      const ip = parts[0] || "";
+      const portValue = parts[1] ? parseInt(parts[1], 10) : this.defaultPort;
       const targetPort =
-        c.port && c.port > 0 && c.port <= 65535 ? c.port : this.defaultPort;
-      this.udpServer.send(buf, targetPort, c.ip, (err) => {
+        portValue && portValue > 0 && portValue <= 65535
+          ? portValue
+          : this.defaultPort;
+      if (!ip) {
+        continue;
+      }
+      this.udpServer.send(buf, targetPort, ip, (err) => {
         if (err) {
           console.error("Failed to send UDP message:", err);
           vscode.window.showErrorMessage(
-            `向 ${c.username}(${c.ip}) 发送消息失败：${String(err)}`
+            `向 ${c} 发送消息失败：${String(err)}`,
           );
         }
       });
       if (this.messageManager) {
-        this.messageManager.saveOutgoing(c, text, timestamp, this.defaultPort);
+        const contact: ChatContact = {
+          ip,
+          port: targetPort,
+          username: ip,
+        };
+        this.messageManager.saveOutgoing(
+          contact,
+          text,
+          timestamp,
+          this.defaultPort,
+        );
       }
     }
-    console.log(
-      "Sent message:",
-      text,
-      "contacts:",
-      contacts.map((c) => `${c.username}(${c.ip})`)
-    );
   }
 
   public async checkContactOnline(contact: ChatContact): Promise<boolean> {
@@ -187,7 +208,7 @@ export class ChatMessageService {
   public sendLinkMessage(contact: ChatContact, fromId: string) {
     if (!contact || !contact.ip || !this.udpServer) {
       vscode.window.showErrorMessage(
-        "无法发送链接检测消息：目标或本地 UDP 服务无效"
+        "无法发送链接检测消息：目标或本地 UDP 服务无效",
       );
       return;
     }
@@ -207,7 +228,7 @@ export class ChatMessageService {
         vscode.window.showErrorMessage(
           `检测 ${contact.username}(${
             contact.ip
-          }:${targetPort}) 的状态时报错：${String(err)}`
+          }:${targetPort}) 的状态时报错：${String(err)}`,
         );
       }
     });
@@ -226,7 +247,7 @@ export class ChatMessageService {
             "length",
             data.length,
             "data",
-            text
+            text,
           );
           const trimmed = text.trim();
 
@@ -297,30 +318,41 @@ export class ChatMessageService {
     }
   }
 
-  private handleChatMessage(payload: any) {
-		console.log("Received chat message:", payload);
-		// 处理消息
-    const { from, message } = payload;
-    const timestamp = Date.now();
-		// 保存聊天记录
+  private handleChatMessage(payload: ChatMessage) {
+    const { from, value, timestamp } = payload;
+    let fromUsername = "";
+    let fromIp = "";
+    let fromPort = this.defaultPort;
+    const decoded = Buffer.from(from, "base64").toString("utf8");
+    const parts = decoded.split("-");
+    fromUsername = parts[0];
+    const fromParts = parts[1].split(":");
+    fromIp = fromParts[0];
+    fromPort = parseInt(fromParts[1]);
+    let message = "";
+    if (typeof value === "string") {
+      message = value;
+    } else if (value instanceof Buffer) {
+      message = value.toString("utf8");
+    }
+    const ts = timestamp || Date.now();
     if (this.messageManager) {
       this.messageManager.saveIncoming(
         {
-          nickname: from.nickname,
-          ip: from.ip,
-          port: from.port,
+          nickname: fromUsername,
+          ip: fromIp,
+          port: fromPort,
         },
         message,
-        timestamp
+        ts,
       );
     }
-    // 将收到的消息添加到聊天记录面板
     if (this.view) {
       this.view.webview.postMessage({
         type: "receiveMessage",
-        from,
+        from: fromUsername,
         message,
-        timestamp,
+        timestamp: ts,
       });
     }
   }

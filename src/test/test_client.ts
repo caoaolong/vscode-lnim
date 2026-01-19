@@ -20,7 +20,7 @@ let remotePort = 18080;
 
 function getClientId(): string {
   return Buffer.from(
-    `${CLIENT_USERNAME}:${CLIENT_IP}:${CLIENT_PORT}`,
+    `${CLIENT_USERNAME}-${CLIENT_IP}:${CLIENT_PORT}`,
     "utf-8"
   ).toString("base64");
 }
@@ -68,6 +68,7 @@ function printBanner() {
   console.log("  /link        -> 发送 link 探测消息给默认目标");
   console.log("  /target <ip> <port> -> 修改默认目标地址");
   console.log("  /send <ip> <port> <msg> -> 向指定地址发送一次性消息");
+  console.log("  /file <path> -> 向默认目标发送文件消息");
   console.log("  /quit        -> 退出客户端");
   console.log("=".repeat(50));
   updatePrompt();
@@ -119,6 +120,16 @@ rl.on("line", (line) => {
       return;
     }
 
+    if (cmd === "/file") {
+      if (parts.length < 2) {
+        errorLog("用法: /file <path>");
+      } else {
+        const filePath = parts.slice(1).join(" ");
+        sendFileMessage(filePath, remoteIp, remotePort);
+      }
+      return;
+    }
+
     errorLog(`未知命令: ${cmd}`);
     return;
   }
@@ -159,6 +170,26 @@ function sendChat(message: string, ip: string, port: number) {
     } else {
       log(
         `[${new Date().toLocaleTimeString()}] 已向 ${ip}:${port} 发送消息: ${message}`
+      );
+    }
+  });
+}
+
+function sendFileMessage(filePath: string, ip: string, port: number) {
+  const message = `这是一个文件 {#${filePath}}`;
+  const payload: ChatMessage = {
+    type: "chat",
+    from: getClientId(),
+    timestamp: Date.now(),
+    value: message,
+  };
+  const buf = Buffer.from(JSON.stringify(payload), "utf8");
+  udpClient.send(buf, port, ip, (err) => {
+    if (err) {
+      errorLog(`发送文件消息到 ${ip}:${port} 失败: ${err.message}`);
+    } else {
+      log(
+        `[${new Date().toLocaleTimeString()}] 已向 ${ip}:${port} 发送文件消息: ${message}`
       );
     }
   });

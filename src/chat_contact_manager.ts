@@ -56,7 +56,7 @@ export class ChatContactManager {
       let username = `用户_${result.ip}`;
       try {
         const decoded = Buffer.from(result.id, "base64").toString("utf8");
-        const parts = decoded.split(":");
+        const parts = decoded.split("-");
         if (parts.length > 0 && parts[0]) {
           username = parts[0];
         }

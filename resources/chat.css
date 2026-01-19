@@ -56,9 +56,8 @@ body {
     gap: 5px;
 }
 
-/* Hide scrollbar but keep scroll behavior */
 #chat-box {
-    scrollbar-width: none; /* Firefox */
+    scrollbar-width: none;
 }
 
 #chat-box::-webkit-scrollbar {
@@ -114,6 +113,8 @@ body {
     margin-top: 2px;
     padding: 0 4px;
     opacity: 0.8;
+    text-align: center;
+    align-self: center;
 }
 
 /* Input Area Styles */

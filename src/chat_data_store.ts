@@ -13,11 +13,25 @@ export interface StoredContact {
   status?: boolean;
 }
 
+export type StoredChatDirection = "incoming" | "outgoing";
+
+export interface StoredChatMessage {
+  id: number;
+  direction: StoredChatDirection;
+  type: "chat" | "file" | "link";
+  from: string;
+  timestamp: number;
+  value?: string;
+  target?: string[];
+  files?: string[];
+}
+
 export class ChatDataStore {
   private static readonly DEFAULT_PORT = 18080;
 
   private userSettings: StoredUserSettings;
   private contacts: StoredContact[];
+  private chatMessages: StoredChatMessage[];
 
   constructor(private readonly context: vscode.ExtensionContext) {
     this.userSettings = this.context.globalState.get<StoredUserSettings>(
@@ -35,9 +49,10 @@ export class ChatDataStore {
     ) {
       this.userSettings.port = ChatDataStore.DEFAULT_PORT;
     }
-    this.contacts = this.context.globalState.get<StoredContact[]>(
-      "contacts",
-      []
+    this.contacts = this.context.globalState.get<StoredContact[]>("contacts", []);
+    this.chatMessages = this.context.globalState.get<StoredChatMessage[]>(
+      "chatMessages",
+      [],
     );
   }
 
@@ -125,6 +140,26 @@ export class ChatDataStore {
     );
     await this.context.globalState.update("contacts", this.contacts);
     return this.contacts;
+  }
+
+  public getChatMessages(
+    limit: number = 100,
+    offset: number = 0,
+  ): StoredChatMessage[] {
+    if (!this.chatMessages || this.chatMessages.length === 0) {
+      return [];
+    }
+    return this.chatMessages.slice(offset, offset + limit);
+  }
+
+  public async appendChatMessage(
+    message: StoredChatMessage,
+  ): Promise<void> {
+    if (!this.chatMessages) {
+      this.chatMessages = [];
+    }
+    this.chatMessages.push(message);
+    await this.context.globalState.update("chatMessages", this.chatMessages);
   }
 }
 

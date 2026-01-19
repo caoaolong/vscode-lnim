@@ -58,7 +58,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   public id(): string {
     const { nickname, ip, port } = this._userSettings;
-    return Buffer.from(`${nickname}:${ip}:${port}`, "utf-8").toString("base64");
+    return Buffer.from(`${nickname}-${ip}:${port}`, "utf-8").toString("base64");
   }
 
   public resolveWebviewView(
@@ -421,7 +421,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       (data as any).files = normalizedFiles;
     }
-    console.log(data);
+		this._messageService.sendChatMessage(data);
   }
 
   private getLocalIps(): string[] {

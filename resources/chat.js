@@ -279,11 +279,11 @@ window.addEventListener("message", (event) => {
       break;
     }
     case "receiveMessage":
-      const sender = message.from || {};
+			console.log(message);
       addMessage({
         text: message.message,
         isSelf: false,
-        nickname: sender.nickname || "Unknown",
+        nickname: message.from,
         timestamp: message.timestamp,
       });
       break;
