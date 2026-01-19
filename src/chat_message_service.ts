@@ -1,26 +1,39 @@
 import * as dgram from "dgram";
 import * as vscode from "vscode";
 import { ChatMessageManager, ChatContact } from "./chat_message_manager";
+import { ChatFileMetadata, ChatFileService } from "./chat_file_service";
 export interface ChatUserSettings {
   nickname: string;
   ip: string;
   port: number;
 }
 
+export interface ChatFileChunk {
+  index: number;
+  size: number;
+  data: Buffer;
+  finish: boolean;
+}
+
 export interface ChatMessage {
-  type: "chat" | "file" | "link";
+  type: "chat" | "file" | "link" | "chunk";
   from: string;
   timestamp: number;
-  value?: string | Buffer;
+  // type=chat时，表示消息内容
+  // tyoe=chunk时，表示文件的唯一标识
+  value?: string;
   target?: string[];
   files?: string[];
   linkType?: "request" | "reply";
+  // type=chunk时，表示文件块
+  chunk?: ChatFileChunk;
 }
 
 export interface ChatMessageServiceOptions {
   view?: vscode.WebviewView;
   defaultPort: number;
   getSelfId?: () => string;
+  fileService: ChatFileService;
   onLinkMessageReceived?: (result: {
     ip: string;
     port: number;
@@ -47,6 +60,7 @@ export class ChatMessageService {
     { resolve: (online: boolean) => void; timeout: NodeJS.Timeout }
   >();
   private readonly messageManager?: ChatMessageManager;
+  private readonly fileService: ChatFileService;
 
   constructor(port: number, options: ChatMessageServiceOptions) {
     this.currentPort = port || options.defaultPort;
@@ -54,6 +68,7 @@ export class ChatMessageService {
     this.view = options.view;
     this.getSelfId = options.getSelfId;
     this.onLinkMessageReceived = options.onLinkMessageReceived;
+    this.fileService = options.fileService;
     // 创建消息管理器
     this.messageManager = new ChatMessageManager(
       options.context.globalStorageUri.fsPath,
@@ -74,11 +89,32 @@ export class ChatMessageService {
     if (this.udpServer) {
       try {
         this.udpServer.close();
-      } catch {}
+      } catch { }
       this.udpServer = undefined;
     }
     this.currentPort = port || this.defaultPort;
     this.startUdpServer(this.currentPort);
+  }
+
+  sendFileMessage(file: ChatFileMetadata) {
+    if (!this.udpServer || !this.getSelfId) {
+      return;
+    }
+    const payload: ChatMessage = {
+      type: "file",
+      value: file.path,
+      from: this.getSelfId(),
+      timestamp: Date.now(),
+    };
+    const buf = Buffer.from(JSON.stringify(payload), "utf8");
+    this.udpServer.send(buf, file.port, file.ip, (err) => {
+      if (err) {
+        console.error("Failed to send UDP message:", err);
+        vscode.window.showErrorMessage(
+          `向 ${file.username} 请求文件 ${file.path} 失败：${String(err)}`,
+        );
+      }
+    });
   }
 
   public sendChatMessage(message: ChatMessage) {
@@ -87,17 +123,11 @@ export class ChatMessageService {
     }
     const selfId = this.getSelfId();
     const timestamp = message.timestamp || Date.now();
-    let text = "";
-    if (typeof message.value === "string") {
-      text = message.value;
-    } else if (message.value instanceof Buffer) {
-      text = message.value.toString("utf8");
-    }
     const payload: ChatMessage = {
       type: "chat",
       from: selfId,
       timestamp,
-      value: text,
+      value: message.value,
       target: message.target,
       files: message.files,
     };
@@ -133,7 +163,7 @@ export class ChatMessageService {
         };
         this.messageManager.saveOutgoing(
           contact,
-          text,
+          message.value || "",
           timestamp,
           this.defaultPort,
         );
@@ -226,8 +256,7 @@ export class ChatMessageService {
     this.udpServer.send(buf, targetPort, contact.ip, (err) => {
       if (err) {
         vscode.window.showErrorMessage(
-          `检测 ${contact.username}(${
-            contact.ip
+          `检测 ${contact.username}(${contact.ip
           }:${targetPort}) 的状态时报错：${String(err)}`,
         );
       }
@@ -277,6 +306,10 @@ export class ChatMessageService {
             this.handleChatMessage(payload);
             return;
           }
+          if (payload && payload.type === "chunk") {
+            this.handleChunkMessage(payload, rinfo);
+            return;
+          }
         } catch (e) {
           console.error("Failed to handle incoming UDP message:", e);
         }
@@ -292,6 +325,11 @@ export class ChatMessageService {
       console.error("Failed to start UDP server:", e);
       vscode.window.showErrorMessage("无法启动 UDP 服务");
     }
+  }
+
+  handleChunkMessage(payload: any, rinfo: dgram.RemoteInfo) {
+    const data = payload as ChatMessage;
+    this.fileService.saveChunk(data.value, data.chunk, rinfo.address, rinfo.port);
   }
 
   private handleLinkMessage(payload: any, rinfo: dgram.RemoteInfo) {
@@ -328,12 +366,6 @@ export class ChatMessageService {
     const fromParts = parts[1].split(":");
     fromIp = fromParts[0];
     fromPort = parseInt(fromParts[1]);
-    let message = "";
-    if (typeof value === "string") {
-      message = value;
-    } else if (value instanceof Buffer) {
-      message = value.toString("utf8");
-    }
     const ts = timestamp || Date.now();
     if (this.messageManager) {
       this.messageManager.saveIncoming(
@@ -342,7 +374,7 @@ export class ChatMessageService {
           ip: fromIp,
           port: fromPort,
         },
-        message,
+        value || "",
         ts,
       );
     }
@@ -350,7 +382,7 @@ export class ChatMessageService {
       this.view.webview.postMessage({
         type: "receiveMessage",
         from: fromUsername,
-        message,
+        message: value || "",
         timestamp: ts,
       });
     }

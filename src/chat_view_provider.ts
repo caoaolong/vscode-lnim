@@ -13,6 +13,7 @@ import {
   ChatContactManager,
   LinkMessageResult,
 } from "./chat_contact_manager";
+import { ChatFileService } from "./chat_file_service";
 
 type UserSettings = StoredUserSettings;
 type Contact = StoredContact;
@@ -29,6 +30,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private readonly _messageService: ChatMessageService;
   private readonly _messageManager: ChatMessageManager;
   private readonly _contactManager: ChatContactManager;
+  private readonly _chatFileService: ChatFileService;
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
@@ -44,6 +46,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._currentPort =
       this._userSettings.port || ChatViewProvider.DEFAULT_PORT;
     this._messageManager = new ChatMessageManager(this._context.globalStorageUri.fsPath);
+    this._chatFileService = new ChatFileService(this._context.globalStorageUri.fsPath);
     this._messageService = new ChatMessageService(this._currentPort, {
       view: this._view,
       defaultPort: ChatViewProvider.DEFAULT_PORT,
@@ -52,6 +55,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.handleLinkMessageReceived(result);
       },
       context: this._context,
+      fileService: this._chatFileService
     });
   }
 
@@ -73,7 +77,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.options = {
       // Allow scripts in the webview
       enableScripts: true,
-			enableCommandUris: true,
+      enableCommandUris: true,
       localResourceRoots: [
         this._extensionUri,
         vscode.Uri.joinPath(this._extensionUri, "node_modules"),
@@ -337,7 +341,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
             const from = data.from;
             if (from) {
-              vscode.window.showInformationMessage(`${from}: ${absolutePath}`);
+              const [ip, port, username] = from.split("|");
+              this._chatFileService.download({ ip, port: parseInt(port), username, path: absolutePath }, this._messageService);
             }
           } else {
             const label = item?.label ?? item?.value ?? "";
@@ -420,7 +425,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       (data as any).files = normalizedFiles;
     }
-		this._messageService.sendChatMessage(data);
+    this._messageService.sendChatMessage(data);
   }
 
   private getLocalIps(): string[] {

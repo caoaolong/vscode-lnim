@@ -1,15 +1,7 @@
 import * as dgram from "dgram";
+import * as fs from "fs";
 import * as readline from "readline";
-
-interface ChatMessage {
-  type: "chat" | "file" | "link";
-  from: string;
-  timestamp: number;
-  value?: string | Buffer;
-  target?: string[];
-  files?: string[];
-  linkType?: "request" | "reply";
-}
+import { ChatMessage, ChatFileChunk } from "../chat_message_service";
 
 const CLIENT_IP = "10.110.4.12";
 const CLIENT_PORT = 18081;
@@ -195,6 +187,39 @@ function sendFileMessage(filePath: string, ip: string, port: number) {
   });
 }
 
+const chunkSize: number = 1024;
+
+function handleSendFile(filePath: string, from: string, remoteAddr: string, remotePort: number) {
+  // TODO: 实现文件发送逻辑
+  const stat = fs.statSync(filePath);
+  const chunkCount = Math.ceil(stat.size / chunkSize);
+  const fd = fs.openSync(filePath, "r");
+  for (let i = 0; i < chunkCount; i++) {
+    const buffer = Buffer.alloc(chunkSize);
+    const nbytes =fs.readSync(fd, buffer, 0, chunkSize, i * chunkSize);
+    const payload: ChatMessage = {
+      type: "chunk",
+      value: filePath,
+      from: from,
+      timestamp: Date.now(),
+      chunk: {
+        index: i,
+        size: nbytes,
+        data: buffer,
+        finish: i === chunkCount - 1,
+      }
+    };
+    const buf = Buffer.from(JSON.stringify(payload), "utf8");
+    udpClient.send(buf, remotePort, remoteAddr, (err) => {
+      if (err) {
+        errorLog(`发送文件块到 ${remoteAddr}:${remotePort} 失败: ${err.message}`);
+      }
+    });
+  }
+  fs.closeSync(fd);
+}
+
+
 udpClient.on("message", (data, rinfo) => {
   try {
     const text = data.toString("utf8");
@@ -257,6 +282,18 @@ udpClient.on("message", (data, rinfo) => {
       log(
         `[${new Date().toLocaleTimeString()}] ${nickname}@${rinfo.address}:${rinfo.port}: ${msgText}`
       );
+      return;
+    }
+
+    if (msg.type === "file") {
+      const filePath = typeof msg.value === "string" ? msg.value : "";
+      const from = msg.from || "未知";
+      log(
+        `[${new Date().toLocaleTimeString()}] 收到文件请求来自 ${from}@${rinfo.address}:${rinfo.port}: ${filePath}`
+      );
+      if (filePath) {
+        handleSendFile(filePath, from, rinfo.address, rinfo.port);
+      }
       return;
     }
 
