@@ -289,14 +289,20 @@ export class ChatMessageService {
       return;
     }
 
+    // 如果是回复消息，不需要再次回复
+    if (data.reply) {
+      this.fileService.saveChunk(data.value, data.chunk, rinfo.address, rinfo.port);
+      return;
+    }
+
     // 发送回复消息确认收到文件块
     // 必须在处理 saveChunk 之前或无论 saveChunk 是否成功都发送回复，否则发送方会无限重试
-    if (data.id && !data.reply && this.retryManager && this.getSelfId) {
+    if (data.id && this.retryManager && this.getSelfId) {
       this.retryManager.sendReply(
         data.id,
         {
           type: "chunk",
-          value: "",
+          value: data.value || "",
           from: this.getSelfId(),
           timestamp: Date.now(),
           request: false,
@@ -304,6 +310,9 @@ export class ChatMessageService {
         rinfo.address,
         rinfo.port
       );
+      console.log(`[发送] type=chunk, to=${rinfo.address}:${rinfo.port}, type=reply, id=${data.id}`);
+    } else {
+      console.error(`[错误] 无法发送chunk回复: id=${data.id}, retryManager=${!!this.retryManager}, getSelfId=${!!this.getSelfId}`);
     }
     
     this.fileService.saveChunk(data.value, data.chunk, rinfo.address, rinfo.port);
