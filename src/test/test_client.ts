@@ -21,6 +21,31 @@ function getClientId(): string {
 const udpClient = dgram.createSocket("udp4");
 let retryManager: MessageRetryManager;
 
+// 文件接收会话管理
+interface FileReceiveSession {
+  filePath: string;
+  fd: number;
+  receivedChunks: Set<number>;
+  totalChunks: number;
+  chunkSize: number;
+  sessionId: string;
+  senderIp: string;
+  senderPort: number;
+  resendAttempts: number;
+}
+const fileReceiveSessions = new Map<string, FileReceiveSession>();
+
+// 文件发送会话管理
+interface FileSendSession {
+  filePath: string;
+  fd: number;
+  chunkCount: number;
+  sentChunks: Set<number>;
+  targetIp: string;
+  targetPort: number;
+}
+const fileSendSessions = new Map<string, FileSendSession>();
+
 const rl = readline.createInterface({
   input: process.stdin,
   output: process.stdout,
@@ -204,6 +229,20 @@ function handleSendFile(filePath: string, from: string, remoteAddr: string, remo
     const stat = fs.statSync(filePath);
     const chunkCount = Math.ceil(stat.size / chunkSize);
     const fd = fs.openSync(filePath, "r");
+    
+    // 创建发送会话
+    const sessionId = `${remoteAddr}_${remotePort}_${filePath}_${Date.now()}`;
+    fileSendSessions.set(sessionId, {
+      filePath,
+      fd,
+      chunkCount,
+      sentChunks: new Set<number>(),
+      targetIp: remoteAddr,
+      targetPort: remotePort
+    });
+    
+    log(`[文件发送] 创建会话 ${sessionId}, 共 ${chunkCount} 块`);
+    
     for (let i = 0; i < chunkCount; i++) {
       const buffer = Buffer.alloc(chunkSize);
       const nbytes = fs.readSync(fd, buffer, 0, chunkSize, i * chunkSize);
@@ -216,6 +255,7 @@ function handleSendFile(filePath: string, from: string, remoteAddr: string, remo
           from: getClientId(),
           timestamp: Date.now(),
           request: true,
+          sessionId: sessionId,
           chunk: {
             index: i,
             size: nbytes,
@@ -227,9 +267,16 @@ function handleSendFile(filePath: string, from: string, remoteAddr: string, remo
         remoteAddr,
         remotePort
       );
+      
+      // 记录已发送的 chunk
+      const session = fileSendSessions.get(sessionId);
+      if (session) {
+        session.sentChunks.add(i);
+      }
     }
-    fs.closeSync(fd);
-    log(`[发送] type=chunk, to=${remoteAddr}:${remotePort}, type=reply, id=${requestMsgId}, count=${chunkCount}`);
+    
+    // 不在这里关闭 fd，等待传输完成确认后再关闭
+    log(`[发送] type=chunk, to=${remoteAddr}:${remotePort}, type=reply, id=${requestMsgId}, count=${chunkCount}, 等待传输完成确认...`);
   } catch (err) {
     errorLog(`发送文件失败: ${err}`);
   }
@@ -307,7 +354,7 @@ udpClient.on("message", (data, rinfo) => {
     if (msg.type === "chunk") {
       const type = msg.request ? "request" : msg.reply ? "reply" : "unknown";
       log(
-        `[接收] type=chunk, from=${rinfo.address}:${rinfo.port}, type=${type}, id=${msg.id || "N/A"}`
+        `[接收] type=chunk, from=${rinfo.address}:${rinfo.port}, type=${type}, id=${msg.id || "N/A"}, index=${msg.chunk?.index}`
       );
       
       // 如果是请求消息，需要发送回复确认
@@ -327,6 +374,206 @@ udpClient.on("message", (data, rinfo) => {
         log(
           `[发送] type=chunk, to=${rinfo.address}:${rinfo.port}, type=reply, id=${msg.id}`
         );
+        
+        // 保存接收到的 chunk
+        if (msg.chunk && msg.value) {
+          const sessionKey = msg.sessionId || `${rinfo.address}_${rinfo.port}_${msg.value}`;
+          let session = fileReceiveSessions.get(sessionKey);
+          
+          // 首次接收该文件的 chunk，创建会话
+          if (!session && msg.chunk.total) {
+            const receivePath = `./received_${Date.now()}_${msg.value.split('/').pop()}`;
+            const fd = fs.openSync(receivePath, 'w');
+            session = {
+              filePath: receivePath,
+              fd,
+              receivedChunks: new Set<number>(),
+              totalChunks: msg.chunk.total,
+              chunkSize: 1024,
+              sessionId: msg.sessionId || sessionKey,
+              senderIp: rinfo.address,
+              senderPort: rinfo.port,
+              resendAttempts: 0
+            };
+            fileReceiveSessions.set(sessionKey, session);
+            log(`[文件接收] 开始接收文件: ${msg.value}, 共 ${msg.chunk.total} 块, sessionId=${session.sessionId}`);
+          }
+          
+          if (session) {
+            // 写入 chunk 数据
+            const buffer = Buffer.isBuffer(msg.chunk.data)
+              ? msg.chunk.data
+              : Buffer.from((msg.chunk.data as any).data);
+            fs.writeSync(session.fd, buffer, 0, msg.chunk.size, msg.chunk.index * session.chunkSize);
+            session.receivedChunks.add(msg.chunk.index);
+            
+            // 如果是最后一个 chunk，检查完整性
+            if (msg.chunk.finish) {
+              const missingChunks: number[] = [];
+              for (let i = 0; i < session.totalChunks; i++) {
+                if (!session.receivedChunks.has(i)) {
+                  missingChunks.push(i);
+                }
+              }
+              
+              if (missingChunks.length > 0 && session.resendAttempts < 3) {
+                // 请求补发
+                log(`[文件接收] 文件不完整，请求补发 ${missingChunks.length} 个块...`);
+                session.resendAttempts++;
+                
+                retryManager.sendWithRetry(
+                  {
+                    type: "chunk_resend_request",
+                    from: getClientId(),
+                    timestamp: Date.now(),
+                    request: true,
+                    sessionId: session.sessionId,
+                    value: msg.value,
+                    missingChunks: missingChunks
+                  },
+                  rinfo.address,
+                  rinfo.port
+                );
+                
+                return; // 不关闭文件，等待补发
+              } else if (missingChunks.length > 0) {
+                // 达到最大重试次数
+                errorLog(
+                  `[文件接收] 文件接收失败！缺失 ${missingChunks.length} 个块，已达最大重试次数`
+                );
+              } else {
+                // 所有 chunk 都收到了
+                log(`[文件接收] 文件接收完成: ${session.filePath}, 共 ${session.totalChunks} 块`);
+                
+                // 发送传输完成确认
+                retryManager.sendWithRetry(
+                  {
+                    type: "transfer_complete",
+                    from: getClientId(),
+                    timestamp: Date.now(),
+                    request: true,
+                    sessionId: session.sessionId,
+                    value: msg.value
+                  },
+                  rinfo.address,
+                  rinfo.port
+                );
+              }
+              
+              fs.closeSync(session.fd);
+              fileReceiveSessions.delete(sessionKey);
+            } else {
+              // 显示进度
+              const progress = Math.floor((session.receivedChunks.size / session.totalChunks) * 100);
+              if (session.receivedChunks.size % 10 === 0 || session.receivedChunks.size === session.totalChunks) {
+                log(`[文件接收] 进度: ${progress}% (${session.receivedChunks.size}/${session.totalChunks})`);
+              }
+            }
+          }
+        }
+      }
+      return;
+    }
+    
+    // 处理补发请求
+    if (msg.type === "chunk_resend_request") {
+      const type = msg.request ? "request" : msg.reply ? "reply" : "unknown";
+      log(
+        `[接收] type=chunk_resend_request, from=${rinfo.address}:${rinfo.port}, type=${type}, id=${msg.id || "N/A"}, 缺失 ${msg.missingChunks?.length || 0} 个块`
+      );
+      
+      if (msg.request && msg.id) {
+        // 发送回复确认
+        retryManager.sendReply(
+          msg.id,
+          {
+            type: "chunk_resend_request",
+            from: getClientId(),
+            timestamp: Date.now(),
+            request: false,
+          },
+          rinfo.address,
+          rinfo.port
+        );
+        
+        // 处理补发请求
+        const sessionId = msg.sessionId;
+        const missingChunks = msg.missingChunks || [];
+        const session = fileSendSessions.get(sessionId || "");
+        
+        if (session && missingChunks.length > 0) {
+          log(`[文件发送] 补发 ${missingChunks.length} 个块`);
+          
+          for (const index of missingChunks) {
+            if (index < 0 || index >= session.chunkCount) {
+              continue;
+            }
+            
+            try {
+              const buffer = Buffer.alloc(chunkSize);
+              const nbytes = fs.readSync(session.fd, buffer, 0, chunkSize, index * chunkSize);
+              
+              retryManager.sendWithRetry(
+                {
+                  type: "chunk",
+                  value: session.filePath,
+                  from: getClientId(),
+                  timestamp: Date.now(),
+                  request: true,
+                  sessionId: sessionId,
+                  chunk: {
+                    index: index,
+                    size: nbytes,
+                    data: buffer.subarray(0, nbytes),
+                    finish: index === session.chunkCount - 1,
+                    total: session.chunkCount,
+                  }
+                },
+                rinfo.address,
+                rinfo.port
+              );
+            } catch (error) {
+              errorLog(`补发 chunk ${index} 失败: ${error}`);
+            }
+          }
+        }
+      }
+      return;
+    }
+    
+    // 处理传输完成确认
+    if (msg.type === "transfer_complete") {
+      const type = msg.request ? "request" : msg.reply ? "reply" : "unknown";
+      log(
+        `[接收] type=transfer_complete, from=${rinfo.address}:${rinfo.port}, type=${type}, id=${msg.id || "N/A"}`
+      );
+      
+      if (msg.request && msg.id) {
+        // 发送回复确认
+        retryManager.sendReply(
+          msg.id,
+          {
+            type: "transfer_complete",
+            from: getClientId(),
+            timestamp: Date.now(),
+            request: false,
+          },
+          rinfo.address,
+          rinfo.port
+        );
+        
+        // 清理发送会话
+        const sessionId = msg.sessionId;
+        const session = fileSendSessions.get(sessionId || "");
+        if (session) {
+          try {
+            fs.closeSync(session.fd);
+          } catch (error) {
+            errorLog(`关闭文件句柄失败: ${error}`);
+          }
+          fileSendSessions.delete(sessionId || "");
+          log(`[文件发送] 传输完成，会话已清理: ${session.filePath.split('/').pop()}`);
+        }
       }
       return;
     }

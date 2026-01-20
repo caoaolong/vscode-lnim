@@ -30,6 +30,13 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, provider)
 	);
+	
+	// 注册 provider 的 dispose 方法
+	context.subscriptions.push({
+		dispose: () => {
+			provider.dispose();
+		}
+	});
 }
 
 // This method is called when your extension is deactivated

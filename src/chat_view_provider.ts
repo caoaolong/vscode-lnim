@@ -608,4 +608,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       });
     }
   }
+  
+  /**
+   * 清理资源
+   */
+  public dispose(): void {
+    if (this._messageService) {
+      this._messageService.dispose();
+    }
+  }
 }
