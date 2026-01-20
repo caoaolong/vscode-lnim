@@ -10,6 +10,15 @@ export interface ChatFileMetadata {
   path: string;
 }
 
+export interface ReceivedFile {
+  path: string;
+  name: string;
+  size: number;
+  sender: string;
+  ip: string;
+  port: number;
+}
+
 export class ChatFileService {
   private readonly chunkSize: number = 1024;
   private fds: Map<string, number> = new Map();
@@ -45,6 +54,121 @@ export class ChatFileService {
       );
       console.error("打开文件失败:", error);
     }
+  }
+
+  /**
+   * 获取所有接收的文件列表
+   */
+  public getFiles(): ReceivedFile[] {
+    const files: ReceivedFile[] = [];
+    
+    if (!fs.existsSync(this.rootPath)) {
+      return files;
+    }
+
+    try {
+      // 扫描根目录下的所有目录（格式为 ${ip}_${port}）
+      const entries = fs.readdirSync(this.rootPath, { withFileTypes: true });
+      
+      for (const entry of entries) {
+        if (!entry.isDirectory()) {
+          continue;
+        }
+
+        // 解析目录名，提取 IP 和端口
+        const dirMatch = entry.name.match(/^(.+)_(\d+)$/);
+        if (!dirMatch) {
+          continue;
+        }
+
+        const [, ip, portStr] = dirMatch;
+        const port = parseInt(portStr, 10);
+        const dirPath = path.join(this.rootPath, entry.name);
+
+        // 递归扫描目录下的所有文件
+        this.scanDirectoryForFiles(dirPath, ip, port, files);
+      }
+    } catch (error) {
+      console.error("获取文件列表失败:", error);
+    }
+
+    return files;
+  }
+
+  /**
+   * 递归扫描目录中的文件
+   */
+  private scanDirectoryForFiles(
+    dirPath: string,
+    ip: string,
+    port: number,
+    files: ReceivedFile[]
+  ): void {
+    try {
+      const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+      
+      for (const entry of entries) {
+        const fullPath = path.join(dirPath, entry.name);
+        
+        if (entry.isDirectory()) {
+          // 递归扫描子目录
+          this.scanDirectoryForFiles(fullPath, ip, port, files);
+        } else if (entry.isFile()) {
+          // 获取文件信息
+          const stats = fs.statSync(fullPath);
+          const relativePath = path.relative(
+            path.join(this.rootPath, `${ip}_${port}`),
+            fullPath
+          );
+          
+          files.push({
+            path: fullPath,
+            name: entry.name,
+            size: stats.size,
+            sender: `${ip}:${port}`, // 默认显示 IP:Port，后续可以从联系人中获取用户名
+            ip,
+            port,
+          });
+        }
+      }
+    } catch (error) {
+      console.error(`扫描目录失败 ${dirPath}:`, error);
+    }
+  }
+
+  /**
+   * 删除文件
+   */
+  public async deleteFile(filePath: string): Promise<boolean> {
+    try {
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+        
+        // 如果文件所在目录为空，尝试删除目录
+        const dirPath = path.dirname(filePath);
+        try {
+          const dirEntries = fs.readdirSync(dirPath);
+          if (dirEntries.length === 0) {
+            fs.rmdirSync(dirPath);
+          }
+        } catch {
+          // 忽略删除目录的错误
+        }
+        
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.error("删除文件失败:", error);
+      return false;
+    }
+  }
+
+  /**
+   * 打开文件（公开方法）
+   */
+  public async openFile(filePath: string): Promise<void> {
+    await this.openFileInEditor(filePath);
   }
 
   public async download(

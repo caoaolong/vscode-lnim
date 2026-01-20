@@ -6,6 +6,7 @@ const $contactSelect = $("#contact-select");
 const $fileBtn = $("#file-btn");
 const $settingsBtn = $("#settings-btn");
 const $contactsBtn = $("#contacts-btn");
+const $filesBtn = $("#files-btn");
 
 let currentUserSettings = {
   nickname: "User",
@@ -39,6 +40,10 @@ $settingsBtn.on("click", () => {
 
 $contactsBtn.on("click", () => {
   vscode.postMessage({ type: "navigate", page: "contacts" });
+});
+
+$filesBtn.on("click", () => {
+  vscode.postMessage({ type: "navigate", page: "files" });
 });
 
 $input.on("keydown", (e) => {

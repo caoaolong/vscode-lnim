@@ -135,6 +135,60 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           });
           break;
         }
+        case "getFiles": {
+          const files = this._chatFileService.getFiles();
+          // 尝试从联系人中获取用户名
+          const contacts = this._contactManager.getContacts();
+          const filesWithUsername = files.map(file => {
+            const contact = contacts.find(c => c.ip === file.ip && c.port === file.port);
+            return {
+              ...file,
+              sender: contact?.username || file.sender,
+            };
+          });
+          webviewView.webview.postMessage({
+            type: "updateFiles",
+            files: filesWithUsername,
+          });
+          break;
+        }
+        case "deleteFile": {
+          const file = data.file as { path: string; name: string };
+          const answer = await vscode.window.showWarningMessage(
+            `确定要删除文件 ${file.name} 吗？此操作不可撤销。`,
+            "删除",
+            "取消"
+          );
+          if (answer !== "删除") {
+            break;
+          }
+          const success = await this._chatFileService.deleteFile(file.path);
+          if (success) {
+            // 刷新文件列表
+            const files = this._chatFileService.getFiles();
+            const contacts = this._contactManager.getContacts();
+            const filesWithUsername = files.map(f => {
+              const contact = contacts.find(c => c.ip === f.ip && c.port === f.port);
+              return {
+                ...f,
+                sender: contact?.username || f.sender,
+              };
+            });
+            webviewView.webview.postMessage({
+              type: "updateFiles",
+              files: filesWithUsername,
+            });
+            vscode.window.showInformationMessage(`文件 ${file.name} 已删除`);
+          } else {
+            vscode.window.showErrorMessage(`删除文件 ${file.name} 失败`);
+          }
+          break;
+        }
+        case "openFile": {
+          const file = data.file as { path: string; name: string };
+          await this._chatFileService.openFile(file.path);
+          break;
+        }
         case "warning": {
           const warningType = (data as any).warningType;
           if (warningType === "noTargetSelected") {
@@ -499,6 +553,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         "resources",
         "contacts.js"
       );
+      const filesJsUri = this._getLocalResourceUri(
+        webview,
+        "resources",
+        "files.js"
+      );
 
       // Replace placeholders in the HTML file
       html = html
@@ -509,7 +568,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         .replace(/{{chatCssUri}}/g, chatCssUri.toString())
         .replace(/{{chatJsUri}}/g, chatJsUri.toString())
         .replace(/{{settingsJsUri}}/g, settingsJsUri.toString())
-        .replace(/{{contactsJsUri}}/g, contactsJsUri.toString());
+        .replace(/{{contactsJsUri}}/g, contactsJsUri.toString())
+        .replace(/{{filesJsUri}}/g, filesJsUri.toString());
 
       return html;
     } catch (error) {
