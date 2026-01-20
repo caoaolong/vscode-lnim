@@ -303,10 +303,38 @@ udpClient.on("message", (data, rinfo) => {
       return;
     }
 
-    // 其他类型消息（chunk等）
-		const type = msg.request ? "request" : msg.reply ? "reply" : "unknown";
+    // 处理 chunk 消息
+    if (msg.type === "chunk") {
+      const type = msg.request ? "request" : msg.reply ? "reply" : "unknown";
+      log(
+        `[接收] type=chunk, from=${rinfo.address}:${rinfo.port}, type=${type}, id=${msg.id || "N/A"}`
+      );
+      
+      // 如果是请求消息，需要发送回复确认
+      if (msg.request && msg.id) {
+        retryManager.sendReply(
+          msg.id,
+          {
+            type: "chunk",
+            from: getClientId(),
+            timestamp: Date.now(),
+            request: false,
+            value: msg.value || "",
+          },
+          rinfo.address,
+          rinfo.port
+        );
+        log(
+          `[发送] type=chunk, to=${rinfo.address}:${rinfo.port}, type=reply, id=${msg.id}`
+        );
+      }
+      return;
+    }
+    
+    // 其他未知类型消息
+    const type = msg.request ? "request" : msg.reply ? "reply" : "unknown";
     log(
-      `[接收] type=chunk, from=${rinfo.address}:${rinfo.port}, type=${type}, id=${msg.id || "N/A"}`
+      `[接收] type=${msg.type || "unknown"}, from=${rinfo.address}:${rinfo.port}, type=${type}, id=${msg.id || "N/A"}`
     );
   } catch (e) {
     errorLog(`处理消息时出错: ${e}`);
