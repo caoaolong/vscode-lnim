@@ -284,13 +284,17 @@ export class ChatMessageService {
   handleChunkMessage(payload: any, rinfo: dgram.RemoteInfo) {
     const data = payload as ChatMessage;
     
+    console.log(`[接收] type=chunk, from=${rinfo.address}:${rinfo.port}, id=${data.id}, reply=${data.reply}, request=${data.request}, index=${data.chunk?.index}`);
+    
     // 校验必填字段，防止处理无效消息
     if (!data.chunk || typeof data.chunk.index !== 'number') {
+      console.error(`[错误] chunk消息字段不完整`);
       return;
     }
 
     // 如果是回复消息，不需要再次回复
     if (data.reply) {
+      console.log(`[接收] 这是一个回复消息，不需要再次回复`);
       this.fileService.saveChunk(data.value, data.chunk, rinfo.address, rinfo.port);
       return;
     }
@@ -370,12 +374,12 @@ export class ChatMessageService {
         const buffer = Buffer.alloc(this.chunkSize);
         const nbytes = fs.readSync(fd, buffer, 0, this.chunkSize, i * this.chunkSize);
         
-        if (this.retryManager) {
+        if (this.retryManager && this.getSelfId) {
           this.retryManager.sendWithRetry(
             {
               type: "chunk",
               value: filePath,
-              from: from,
+              from: this.getSelfId(),
               timestamp: Date.now(),
               request: true, // 原始消息，需要确认
               chunk: {
