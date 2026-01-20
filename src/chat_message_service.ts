@@ -25,7 +25,8 @@ export interface ChatMessage {
   value?: string;
   target?: string[];
   files?: string[];
-  linkType?: "request" | "reply";
+  // type=link时必填：true代表请求，false代表回复
+  request: boolean;
   // type=chunk时，表示文件块
   chunk?: ChatFileChunk;
 }
@@ -56,10 +57,6 @@ export class ChatMessageService {
     id?: string;
     isReply: boolean;
   }) => void;
-  private readonly pendingLinkChecks = new Map<
-    string,
-    { resolve: (online: boolean) => void; timeout: NodeJS.Timeout }
-  >();
   private readonly messageManager?: ChatMessageManager;
   private readonly fileService: ChatFileService;
   private readonly chunkSize: number = 1024;
@@ -107,6 +104,7 @@ export class ChatMessageService {
       value: file.path,
       from: this.getSelfId(),
       timestamp: Date.now(),
+      request: true,
     };
     const buf = Buffer.from(JSON.stringify(payload), "utf8");
     this.udpServer.send(buf, file.port, file.ip, (err) => {
@@ -132,6 +130,7 @@ export class ChatMessageService {
       value: message.value,
       target: message.target,
       files: message.files,
+      request: false,
     };
     const buf = Buffer.from(JSON.stringify(payload), "utf8");
     if (!this.udpServer) {
@@ -173,94 +172,42 @@ export class ChatMessageService {
     }
   }
 
-  public async checkContactOnline(contact: ChatContact): Promise<boolean> {
-    if (!contact || !contact.ip) {
-      return false;
-    }
-    if (!this.udpServer) {
-      return false;
-    }
-    return new Promise<boolean>((resolve) => {
-      const targetPort =
-        contact.port && contact.port > 0 && contact.port <= 65535
-          ? contact.port
-          : this.defaultPort;
-      const key = `${contact.ip}:${targetPort}`;
-      const existing = this.pendingLinkChecks.get(key);
-      if (existing) {
-        clearTimeout(existing.timeout);
-        this.pendingLinkChecks.delete(key);
-      }
-      const timeout = setTimeout(() => {
-        this.pendingLinkChecks.delete(key);
-        resolve(false);
-      }, 1000);
-      this.pendingLinkChecks.set(key, { resolve, timeout });
-      const fromId = this.getSelfId ? this.getSelfId() : "";
-      const payload: ChatMessage = {
-        type: "link",
-        from: fromId,
-        timestamp: Date.now(),
-        linkType: "request",
-      };
-      const buf = Buffer.from(JSON.stringify(payload), "utf8");
-      this.udpServer!.send(buf, targetPort, contact.ip, (err) => {
-        if (err) {
-          console.error("Failed to send online-check link message:", err);
-        }
-      });
-    });
-  }
-
-  public sendScanContactMessage(contact: ChatContact) {
+  /**
+   * 发送 LinkMessage 探测消息
+   * @param contact 目标联系人
+   * @param showError 是否显示错误提示（默认为 false）
+   */
+  public sendLinkMessage(contact: ChatContact, showError: boolean = false) {
     if (!contact || !contact.ip || !this.udpServer) {
+      if (showError) {
+        vscode.window.showErrorMessage(
+          "无法发送链接检测消息：目标或本地 UDP 服务无效",
+        );
+      }
       return;
     }
     const targetPort =
       contact.port && contact.port > 0 && contact.port <= 65535
         ? contact.port
         : this.defaultPort;
-
-    // 只发送 link 探测消息，不等待回复
+    
     const fromId = this.getSelfId ? this.getSelfId() : "";
     const payload: ChatMessage = {
       type: "link",
       from: fromId,
       timestamp: Date.now(),
-      linkType: "request",
+      request: true,
     };
     const buf = Buffer.from(JSON.stringify(payload), "utf8");
     this.udpServer.send(buf, targetPort, contact.ip, (err) => {
       if (err) {
-        console.error("Failed to send scan link message:", err);
-      }
-    });
-  }
-
-  public sendLinkMessage(contact: ChatContact, fromId: string) {
-    if (!contact || !contact.ip || !this.udpServer) {
-      vscode.window.showErrorMessage(
-        "无法发送链接检测消息：目标或本地 UDP 服务无效",
-      );
-      return;
-    }
-    const targetPort =
-      contact.port && contact.port > 0 && contact.port <= 65535
-        ? contact.port
-        : this.defaultPort;
-    const payload: ChatMessage = {
-      type: "link",
-      from: fromId,
-      timestamp: Date.now(),
-      linkType: "request",
-    };
-    const buf = Buffer.from(JSON.stringify(payload), "utf8");
-    this.udpServer.send(buf, targetPort, contact.ip, (err) => {
-      if (err) {
-        vscode.window.showErrorMessage(
-          `检测 ${contact.username}(${contact.ip
-          }:${targetPort}) 的状态时报错：${String(err)}`,
-        );
+        if (showError) {
+          vscode.window.showErrorMessage(
+            `检测 ${contact.username}(${contact.ip}:${targetPort}) 的状态时报错：${String(err)}`,
+          );
+        } else {
+          console.error("Failed to send link message:", err);
+        }
       }
     });
   }
@@ -368,6 +315,7 @@ export class ChatMessageService {
           value: filePath,
           from: from,
           timestamp: Date.now(),
+          request: false,
           chunk: {
             index: i,
             size: nbytes,
@@ -399,21 +347,20 @@ export class ChatMessageService {
   }
 
   private handleLinkMessage(payload: any, rinfo: dgram.RemoteInfo) {
-    const rawType = payload.linkType;
-    if (rawType !== "request" && rawType !== "reply") {
+    // 验证 request 字段
+    if (typeof payload.request !== "boolean") {
       return;
     }
-    const linkType: "request" | "reply" = rawType;
-    const isReply = linkType === "reply";
+    const isRequest = payload.request;
 
     // 自动回复 LinkMessage（如果收到的是 request）
-    if (linkType === "request" && this.getSelfId && this.udpServer) {
+    if (isRequest && this.getSelfId && this.udpServer) {
       const myId = this.getSelfId();
       const replyPayload: ChatMessage = {
         type: "link",
         from: myId,
         timestamp: Date.now(),
-        linkType: "reply",
+        request: false,
       };
       const replyBuf = Buffer.from(JSON.stringify(replyPayload), "utf8");
       this.udpServer.send(replyBuf, rinfo.port, rinfo.address, (err) => {
@@ -425,7 +372,7 @@ export class ChatMessageService {
 
     // 通知收到 link 类型消息，让外部判断是否需要添加到联系人列表
     if (
-      isReply &&
+      !isRequest &&
       typeof payload.from === "string" &&
       this.onLinkMessageReceived
     ) {
@@ -433,17 +380,8 @@ export class ChatMessageService {
         ip: rinfo.address,
         port: rinfo.port,
         id: payload.from,
-        isReply,
+        isReply: true,
       });
-    }
-
-    // 处理在线检测的待处理请求
-    const key = `${rinfo.address}:${rinfo.port}`;
-    const pending = this.pendingLinkChecks.get(key);
-    if (pending) {
-      this.pendingLinkChecks.delete(key);
-      clearTimeout(pending.timeout);
-      pending.resolve(true);
     }
   }
 

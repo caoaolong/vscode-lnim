@@ -134,7 +134,7 @@ function sendLink(ip: string, port: number) {
     type: "link",
     from: getClientId(),
     timestamp: Date.now(),
-    linkType: "request",
+    request: true,
   };
   const buf = Buffer.from(JSON.stringify(payload), "utf8");
   udpClient.send(buf, port, ip, (err) => {
@@ -154,6 +154,7 @@ function sendChat(message: string, ip: string, port: number) {
     from: getClientId(),
     timestamp: Date.now(),
     value: message,
+    request: false,
   };
   const buf = Buffer.from(JSON.stringify(payload), "utf8");
   udpClient.send(buf, port, ip, (err) => {
@@ -174,6 +175,7 @@ function sendFileMessage(filePath: string, ip: string, port: number) {
     from: getClientId(),
     timestamp: Date.now(),
     value: message,
+    request: false,
   };
   const buf = Buffer.from(JSON.stringify(payload), "utf8");
   udpClient.send(buf, port, ip, (err) => {
@@ -202,6 +204,7 @@ function handleSendFile(filePath: string, from: string, remoteAddr: string, remo
       value: filePath,
       from: from,
       timestamp: Date.now(),
+      request: false,
       chunk: {
         index: i,
         size: nbytes,
@@ -237,27 +240,20 @@ udpClient.on("message", (data, rinfo) => {
     const msg = payload as ChatMessage;
 
     if (msg.type === "link") {
-      if (msg.linkType !== "request" && msg.linkType !== "reply") {
-        log(
-          `[${new Date().toLocaleTimeString()}] 收到未知类型的 link 消息: ${JSON.stringify(
-            msg
-          )}`
-        );
-        return;
-      }
-      const isReply = msg.linkType === "reply";
+      const isRequest = msg.request;
+      const typeStr = isRequest ? "request" : "reply";
       log(
         `[${new Date().toLocaleTimeString()}] 收到 link 消息来自 ${
           rinfo.address
-        }:${rinfo.port} (ID: ${msg.from}, Type: ${msg.linkType})`
+        }:${rinfo.port} (ID: ${msg.from}, Type: ${typeStr})`
       );
 
-      if (!isReply) {
+      if (isRequest) {
         const replyPayload: ChatMessage = {
           type: "link",
           from: getClientId(),
           timestamp: Date.now(),
-          linkType: "reply",
+          request: false,
         };
         const replyBuf = Buffer.from(JSON.stringify(replyPayload), "utf8");
         udpClient.send(replyBuf, rinfo.port, rinfo.address, (err) => {

@@ -183,7 +183,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           };
 
           // 只负责发送消息，结果在 message 事件处理器中通过回调处理
-          this._messageService.sendScanContactMessage(tempContact);
+          this._messageService.sendLinkMessage(tempContact, false);
           break;
         }
         case "getContactsStatus": {
@@ -191,7 +191,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         case "checkContactLink": {
           const c: Contact = data.contact;
-          this._messageService.sendLinkMessage(c, this.id());
+          this._messageService.sendLinkMessage(c, true);
           break;
         }
         case "deleteContact": {
