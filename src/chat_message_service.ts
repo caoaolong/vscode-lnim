@@ -127,8 +127,6 @@ export class ChatMessageService {
       const idleTime = now - session.lastActivityTime;
       
       if (idleTime > timeoutMs) {
-        console.warn(`发送会话超时：${sessionId}, 空闲时间：${Math.floor(idleTime / 1000)}秒`);
-        
         // 清理会话
         try {
           fs.closeSync(session.fd);
@@ -426,23 +424,18 @@ export class ChatMessageService {
   handleChunkMessage(payload: any, rinfo: dgram.RemoteInfo) {
     const data = payload as ChatMessage;
     
-    console.log(`[接收] type=chunk, from=${rinfo.address}:${rinfo.port}, id=${data.id}, reply=${data.reply}, request=${data.request}, index=${data.chunk?.index}`);
-    
     // 校验必填字段，防止处理无效消息
     if (!data.chunk || typeof data.chunk.index !== 'number') {
-      console.error(`[错误] chunk消息字段不完整`);
       return;
     }
 
     // 如果是回复消息，不需要再次回复
     if (data.reply) {
-      console.log(`[接收] 这是一个回复消息，不需要再次回复`);
       this.fileService.saveChunk(data.value, data.chunk, rinfo.address, rinfo.port, data.sessionId);
       return;
     }
 
     // 发送回复消息确认收到文件块
-    // 必须在处理 saveChunk 之前或无论 saveChunk 是否成功都发送回复，否则发送方会无限重试
     if (data.id && this.retryManager && this.getSelfId) {
       this.retryManager.sendReply(
         data.id,
@@ -456,9 +449,6 @@ export class ChatMessageService {
         rinfo.address,
         rinfo.port
       );
-      console.log(`[发送] type=chunk, to=${rinfo.address}:${rinfo.port}, type=reply, id=${data.id}`);
-    } else {
-      console.error(`[错误] 无法发送chunk回复: id=${data.id}, retryManager=${!!this.retryManager}, getSelfId=${!!this.getSelfId}`);
     }
     
     this.fileService.saveChunk(data.value, data.chunk, rinfo.address, rinfo.port, data.sessionId);
@@ -469,7 +459,6 @@ export class ChatMessageService {
    */
   private handleResendRequest(payload: any, rinfo: dgram.RemoteInfo) {
     const msg = payload as ChatMessage;
-    console.log(`[接收] 补发请求, sessionId=${msg.sessionId}, 缺失 ${msg.missingChunks?.length || 0} 个块`);
     
     // 发送回复确认
     if (msg.id && this.retryManager && this.getSelfId) {
@@ -486,12 +475,16 @@ export class ChatMessageService {
       );
     }
     
+    // 只处理请求消息
+    if (!msg.request) {
+      return;
+    }
+    
     const sessionId = msg.sessionId;
     const missingChunks = msg.missingChunks || [];
     const filePath = msg.value;
     
     if (!sessionId || !filePath || missingChunks.length === 0) {
-      console.error('补发请求参数不完整');
       return;
     }
     
@@ -505,12 +498,9 @@ export class ChatMessageService {
     // 更新活动时间
     session.lastActivityTime = Date.now();
     
-    console.log(`补发 ${missingChunks.length} 个块：${missingChunks.slice(0, 10).join(', ')}${missingChunks.length > 10 ? '...' : ''}`);
-    
     // 补发缺失的 chunk
     for (const index of missingChunks) {
       if (index < 0 || index >= session.chunkCount) {
-        console.error(`无效的 chunk 索引：${index}`);
         continue;
       }
       
@@ -550,7 +540,6 @@ export class ChatMessageService {
    */
   private handleTransferComplete(payload: any, rinfo: dgram.RemoteInfo) {
     const msg = payload as ChatMessage;
-    console.log(`[接收] 传输完成确认, sessionId=${msg.sessionId}`);
     
     // 发送回复确认
     if (msg.id && this.retryManager && this.getSelfId) {
@@ -567,21 +556,21 @@ export class ChatMessageService {
       );
     }
     
-    const sessionId = msg.sessionId;
-    if (!sessionId) {
+    // 只处理请求消息
+    if (!msg.request || !msg.sessionId) {
       return;
     }
     
     // 清理发送会话
-    const session = this.fileSendSessions.get(sessionId);
+    const session = this.fileSendSessions.get(msg.sessionId);
     if (session) {
       try {
         fs.closeSync(session.fd);
       } catch (error) {
         console.error('关闭文件句柄失败:', error);
       }
-      this.fileSendSessions.delete(sessionId);
-      console.log(`文件传输会话已清理：${sessionId}`);
+      
+      this.fileSendSessions.delete(msg.sessionId);
       vscode.window.showInformationMessage(
         `文件发送完成: ${session.filePath.split('/').pop()}`
       );
@@ -648,8 +637,6 @@ export class ChatMessageService {
         lastActivityTime: now,
         createdTime: now
       });
-      
-      console.log(`创建文件发送会话：${sessionId}, 共 ${chunkCount} 块`);
 
       // 分块读取并发送文件
       for (let i = 0; i < chunkCount; i++) {
@@ -663,12 +650,12 @@ export class ChatMessageService {
               value: filePath,
               from: this.getSelfId(),
               timestamp: Date.now(),
-              request: true, // 原始消息，需要确认
+              request: true,
               sessionId: sessionId,
               chunk: {
                 index: i,
                 size: nbytes,
-                data: buffer.subarray(0, nbytes), // 只发送实际读取的字节
+                data: buffer.subarray(0, nbytes),
                 finish: i === chunkCount - 1,
                 total: chunkCount,
               }
@@ -685,9 +672,6 @@ export class ChatMessageService {
         }
       }
       
-      console.log(`已发送所有 ${chunkCount} 个块，等待传输完成确认...`);
-      
-      // 不在这里关闭 fd，等待传输完成确认后再关闭
       vscode.window.showInformationMessage(
         `正在向 ${rinfo.address}:${rinfo.port} 发送文件: ${filePath.split('/').pop()} (${chunkCount} 块)`
       );
