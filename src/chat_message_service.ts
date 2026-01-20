@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import { ChatMessageManager, ChatContact } from "./chat_message_manager";
 import { ChatFileMetadata, ChatFileService } from "./chat_file_service";
+import { MessageRetryManager } from "./message_retry_manager";
 export interface ChatUserSettings {
   nickname: string;
   ip: string;
@@ -20,6 +21,10 @@ export interface ChatMessage {
   type: "chat" | "file" | "link" | "chunk";
   from: string;
   timestamp: number;
+  // 消息唯一标识（UUID）
+  id: string;
+  // 是否为回复消息
+  reply: boolean;
   // type=chat时，表示消息内容
   // tyoe=chunk时，表示文件的唯一标识
   value?: string;
@@ -60,6 +65,7 @@ export class ChatMessageService {
   private readonly messageManager?: ChatMessageManager;
   private readonly fileService: ChatFileService;
   private readonly chunkSize: number = 1024;
+  private retryManager?: MessageRetryManager;
 
   constructor(port: number, options: ChatMessageServiceOptions) {
     this.currentPort = port || options.defaultPort;
@@ -96,47 +102,30 @@ export class ChatMessageService {
   }
 
   sendFileMessage(file: ChatFileMetadata) {
-    if (!this.udpServer || !this.getSelfId) {
+    if (!this.retryManager || !this.getSelfId) {
       return;
     }
-    const payload: ChatMessage = {
-      type: "file",
-      value: file.path,
-      from: this.getSelfId(),
-      timestamp: Date.now(),
-      request: true,
-    };
-    const buf = Buffer.from(JSON.stringify(payload), "utf8");
-    this.udpServer.send(buf, file.port, file.ip, (err) => {
-      if (err) {
-        console.error("Failed to send UDP message:", err);
-        vscode.window.showErrorMessage(
-          `向 ${file.username} 请求文件 ${file.path} 失败：${String(err)}`,
-        );
-      }
-    });
+    
+    this.retryManager.sendWithRetry(
+      {
+        type: "file",
+        value: file.path,
+        from: this.getSelfId(),
+        timestamp: Date.now(),
+        request: true,
+      },
+      file.ip,
+      file.port
+    );
   }
 
   public sendChatMessage(message: ChatMessage) {
-    if (!this.getSelfId) {
+    if (!this.getSelfId || !this.retryManager) {
       return;
     }
     const selfId = this.getSelfId();
     const timestamp = message.timestamp || Date.now();
-    const payload: ChatMessage = {
-      type: "chat",
-      from: selfId,
-      timestamp,
-      value: message.value,
-      target: message.target,
-      files: message.files,
-      request: false,
-    };
-    const buf = Buffer.from(JSON.stringify(payload), "utf8");
-    if (!this.udpServer) {
-      vscode.window.showErrorMessage("UDP 服务未启动，无法发送消息");
-      return;
-    }
+    
     for (const c of message.target || []) {
       const parts = c.split(":");
       const ip = parts[0] || "";
@@ -148,14 +137,23 @@ export class ChatMessageService {
       if (!ip) {
         continue;
       }
-      this.udpServer.send(buf, targetPort, ip, (err) => {
-        if (err) {
-          console.error("Failed to send UDP message:", err);
-          vscode.window.showErrorMessage(
-            `向 ${c} 发送消息失败：${String(err)}`,
-          );
-        }
-      });
+
+      // 使用重试管理器发送消息
+      this.retryManager.sendWithRetry(
+        {
+          type: "chat",
+          from: selfId,
+          timestamp,
+          value: message.value,
+          target: message.target,
+          files: message.files,
+          request: true,
+        },
+        ip,
+        targetPort
+      );
+
+      // 保存消息到历史记录
       if (this.messageManager) {
         const contact: ChatContact = {
           ip,
@@ -178,7 +176,7 @@ export class ChatMessageService {
    * @param showError 是否显示错误提示（默认为 false）
    */
   public sendLinkMessage(contact: ChatContact, showError: boolean = false) {
-    if (!contact || !contact.ip || !this.udpServer) {
+    if (!contact || !contact.ip || !this.retryManager) {
       if (showError) {
         vscode.window.showErrorMessage(
           "无法发送链接检测消息：目标或本地 UDP 服务无效",
@@ -192,30 +190,35 @@ export class ChatMessageService {
         : this.defaultPort;
     
     const fromId = this.getSelfId ? this.getSelfId() : "";
-    const payload: ChatMessage = {
-      type: "link",
-      from: fromId,
-      timestamp: Date.now(),
-      request: true,
-    };
-    const buf = Buffer.from(JSON.stringify(payload), "utf8");
-    this.udpServer.send(buf, targetPort, contact.ip, (err) => {
-      if (err) {
-        if (showError) {
-          vscode.window.showErrorMessage(
-            `检测 ${contact.username}(${contact.ip}:${targetPort}) 的状态时报错：${String(err)}`,
-          );
-        } else {
-          console.error("Failed to send link message:", err);
-        }
-      }
-    });
+    
+    // 使用重试管理器发送消息
+    this.retryManager.sendWithRetry(
+      {
+        type: "link",
+        from: fromId,
+        timestamp: Date.now(),
+        request: true,
+      },
+      contact.ip,
+      targetPort
+    );
   }
 
   private startUdpServer(port: number) {
     try {
       const targetPort = port || this.defaultPort;
       this.udpServer = dgram.createSocket("udp4");
+      
+      // 创建重试管理器，从配置中读取参数
+      const config = vscode.workspace.getConfiguration('lnim');
+      const retryInterval = config.get<number>('retryInterval', 5000);
+      const maxRetries = config.get<number>('maxRetries', -1);
+      this.retryManager = new MessageRetryManager(
+        this.udpServer,
+        retryInterval,
+        maxRetries
+      );
+      
       this.udpServer.on("message", (data, rinfo) => {
         try {
           const text = data.toString();
@@ -238,11 +241,19 @@ export class ChatMessageService {
             throw err;
           }
 
+          // 检查是否为回复消息
+          if (payload && payload.reply === true && payload.id) {
+            // 标记消息已收到回复
+            if (this.retryManager) {
+              this.retryManager.markAsReceived(payload.id);
+            }
+          }
+
           if (payload && payload.type === "link") {
             this.handleLinkMessage(payload, rinfo);
             return;
           } else if (payload && payload.type === "chat") {
-            this.handleChatMessage(payload);
+            this.handleChatMessage(payload, rinfo);
             return;
           } else if (payload && payload.type === "chunk") {
             this.handleChunkMessage(payload, rinfo);
@@ -271,6 +282,23 @@ export class ChatMessageService {
 
   handleChunkMessage(payload: any, rinfo: dgram.RemoteInfo) {
     const data = payload as ChatMessage;
+    
+    // 发送回复消息确认收到文件块
+    if (data.id && !data.reply && this.retryManager && this.getSelfId) {
+      this.retryManager.sendReply(
+        data.id,
+        {
+          type: "chunk",
+          value: "",
+          from: this.getSelfId(),
+          timestamp: Date.now(),
+          request: data.request,
+        },
+        rinfo.address,
+        rinfo.port
+      );
+    }
+    
     this.fileService.saveChunk(data.value, data.chunk, rinfo.address, rinfo.port);
   }
 
@@ -281,6 +309,22 @@ export class ChatMessageService {
     const msg = payload as ChatMessage;
     const filePath = typeof msg.value === "string" ? msg.value : "";
     const from = msg.from || "";
+
+    // 发送回复消息确认收到文件请求
+    if (msg.id && this.retryManager && this.getSelfId) {
+      this.retryManager.sendReply(
+        msg.id,
+        {
+          type: "file",
+          value: "",
+          from: this.getSelfId(),
+          timestamp: Date.now(),
+          request: msg.request,
+        },
+        rinfo.address,
+        rinfo.port
+      );
+    }
 
     if (!filePath) {
       console.error("收到文件请求，但文件路径为空");
@@ -310,28 +354,24 @@ export class ChatMessageService {
         const buffer = Buffer.alloc(this.chunkSize);
         const nbytes = fs.readSync(fd, buffer, 0, this.chunkSize, i * this.chunkSize);
         
-        const chunkPayload: ChatMessage = {
-          type: "chunk",
-          value: filePath,
-          from: from,
-          timestamp: Date.now(),
-          request: false,
-          chunk: {
-            index: i,
-            size: nbytes,
-            data: buffer.slice(0, nbytes), // 只发送实际读取的字节
-            finish: i === chunkCount - 1,
-          }
-        };
-
-        const buf = Buffer.from(JSON.stringify(chunkPayload), "utf8");
-        
-        if (this.udpServer) {
-          this.udpServer.send(buf, rinfo.port, rinfo.address, (err) => {
-            if (err) {
-              console.error(`发送文件块 ${i}/${chunkCount} 到 ${rinfo.address}:${rinfo.port} 失败:`, err);
-            }
-          });
+        if (this.retryManager) {
+          this.retryManager.sendWithRetry(
+            {
+              type: "chunk",
+              value: filePath,
+              from: from,
+              timestamp: Date.now(),
+              request: true, // 原始消息，需要确认
+              chunk: {
+                index: i,
+                size: nbytes,
+                data: buffer.slice(0, nbytes), // 只发送实际读取的字节
+                finish: i === chunkCount - 1,
+              }
+            },
+            rinfo.address,
+            rinfo.port
+          );
         }
       }
 
@@ -354,20 +394,21 @@ export class ChatMessageService {
     const isRequest = payload.request;
 
     // 自动回复 LinkMessage（如果收到的是 request）
-    if (isRequest && this.getSelfId && this.udpServer) {
+    if (isRequest && this.getSelfId && this.retryManager && payload.id) {
       const myId = this.getSelfId();
-      const replyPayload: ChatMessage = {
-        type: "link",
-        from: myId,
-        timestamp: Date.now(),
-        request: false,
-      };
-      const replyBuf = Buffer.from(JSON.stringify(replyPayload), "utf8");
-      this.udpServer.send(replyBuf, rinfo.port, rinfo.address, (err) => {
-        if (err) {
-          console.error("Failed to send LinkMessage reply:", err);
-        }
-      });
+      
+      // 使用 sendReply 发送回复消息（使用原始消息的 id）
+      this.retryManager.sendReply(
+        payload.id,
+        {
+          type: "link",
+          from: myId,
+          timestamp: Date.now(),
+          request: false,
+        },
+        rinfo.address,
+        rinfo.port
+      );
     }
 
     // 通知收到 link 类型消息，让外部判断是否需要添加到联系人列表
@@ -385,8 +426,26 @@ export class ChatMessageService {
     }
   }
 
-  private handleChatMessage(payload: ChatMessage) {
-    const { from, value, timestamp } = payload;
+  private handleChatMessage(payload: ChatMessage, rinfo: dgram.RemoteInfo) {
+    const { from, value, timestamp, id, reply } = payload;
+    
+    // 如果不是回复消息，需要发送确认回复
+    if (!reply && id && this.getSelfId && this.retryManager) {
+      const myId = this.getSelfId();
+      this.retryManager.sendReply(
+        id,
+        {
+          type: "chat",
+          from: myId,
+          timestamp: Date.now(),
+          value: "",
+          request: payload.request,
+        },
+        rinfo.address,
+        rinfo.port
+      );
+    }
+
     let fromUsername = "";
     let fromIp = "";
     let fromPort = this.defaultPort;
@@ -397,24 +456,28 @@ export class ChatMessageService {
     fromIp = fromParts[0];
     fromPort = parseInt(fromParts[1]);
     const ts = timestamp || Date.now();
-    if (this.messageManager) {
-      this.messageManager.saveIncoming(
-        {
-          nickname: fromUsername,
-          ip: fromIp,
-          port: fromPort,
-        },
-        value || "",
-        ts,
-      );
-    }
-    if (this.view) {
-      this.view.webview.postMessage({
-        type: "receiveMessage",
-        from: fromUsername,
-        message: value || "",
-        timestamp: ts,
-      });
+    
+    // 只保存和显示非回复消息
+    if (!reply) {
+      if (this.messageManager) {
+        this.messageManager.saveIncoming(
+          {
+            nickname: fromUsername,
+            ip: fromIp,
+            port: fromPort,
+          },
+          value || "",
+          ts,
+        );
+      }
+      if (this.view) {
+        this.view.webview.postMessage({
+          type: "receiveMessage",
+          from: fromUsername,
+          message: value || "",
+          timestamp: ts,
+        });
+      }
     }
   }
 

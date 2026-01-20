@@ -2,6 +2,7 @@ import * as dgram from "dgram";
 import * as fs from "fs";
 import * as readline from "readline";
 import { ChatMessage, ChatFileChunk } from "../chat_message_service";
+import { MessageRetryManager } from "../message_retry_manager";
 
 const CLIENT_IP = "10.110.4.12";
 const CLIENT_PORT = 18081;
@@ -18,6 +19,7 @@ function getClientId(): string {
 }
 
 const udpClient = dgram.createSocket("udp4");
+let retryManager: MessageRetryManager;
 
 const rl = readline.createInterface({
   input: process.stdin,
@@ -130,94 +132,83 @@ rl.on("line", (line) => {
 });
 
 function sendLink(ip: string, port: number) {
-  const payload: ChatMessage = {
-    type: "link",
-    from: getClientId(),
-    timestamp: Date.now(),
-    request: true,
-  };
-  const buf = Buffer.from(JSON.stringify(payload), "utf8");
-  udpClient.send(buf, port, ip, (err) => {
-    if (err) {
-      errorLog(`发送 link 消息到 ${ip}:${port} 失败: ${err.message}`);
-    } else {
-      log(
-        `[${new Date().toLocaleTimeString()}] 已向 ${ip}:${port} 发送 link 消息`
-      );
-    }
-  });
+  retryManager.sendWithRetry(
+    {
+      type: "link",
+      from: getClientId(),
+      timestamp: Date.now(),
+      request: true,
+    },
+    ip,
+    port
+  );
+  log(
+    `[发送] type=link, to=${ip}:${port}, request=true`
+  );
 }
 
 function sendChat(message: string, ip: string, port: number) {
-  const payload: ChatMessage = {
-    type: "chat",
-    from: getClientId(),
-    timestamp: Date.now(),
-    value: message,
-    request: false,
-  };
-  const buf = Buffer.from(JSON.stringify(payload), "utf8");
-  udpClient.send(buf, port, ip, (err) => {
-    if (err) {
-      errorLog(`发送消息到 ${ip}:${port} 失败: ${err.message}`);
-    } else {
-      log(
-        `[${new Date().toLocaleTimeString()}] 已向 ${ip}:${port} 发送消息: ${message}`
-      );
-    }
-  });
+  retryManager.sendWithRetry(
+    {
+      type: "chat",
+      from: getClientId(),
+      timestamp: Date.now(),
+      value: message,
+      request: true, // 原始消息，需要确认
+    },
+    ip,
+    port
+  );
+  log(
+    `[发送] type=chat, to=${ip}:${port}, request=true`
+  );
 }
 
 function sendFileMessage(filePath: string, ip: string, port: number) {
   const message = `这是一个文件 {#${filePath}}`;
-  const payload: ChatMessage = {
-    type: "chat",
-    from: getClientId(),
-    timestamp: Date.now(),
-    value: message,
-    request: false,
-  };
-  const buf = Buffer.from(JSON.stringify(payload), "utf8");
-  udpClient.send(buf, port, ip, (err) => {
-    if (err) {
-      errorLog(`发送文件消息到 ${ip}:${port} 失败: ${err.message}`);
-    } else {
-      log(
-        `[${new Date().toLocaleTimeString()}] 已向 ${ip}:${port} 发送文件消息: ${message}`
-      );
-    }
-  });
+  retryManager.sendWithRetry(
+    {
+      type: "chat",
+      from: getClientId(),
+      timestamp: Date.now(),
+      value: message,
+      request: true, // 原始消息，需要确认
+    },
+    ip,
+    port
+  );
+  log(
+    `[发送] type=chat(file), to=${ip}:${port}, request=true`
+  );
 }
 
 const chunkSize: number = 1024;
 
 function handleSendFile(filePath: string, from: string, remoteAddr: string, remotePort: number) {
-  // TODO: 实现文件发送逻辑
   const stat = fs.statSync(filePath);
   const chunkCount = Math.ceil(stat.size / chunkSize);
   const fd = fs.openSync(filePath, "r");
   for (let i = 0; i < chunkCount; i++) {
     const buffer = Buffer.alloc(chunkSize);
     const nbytes =fs.readSync(fd, buffer, 0, chunkSize, i * chunkSize);
-    const payload: ChatMessage = {
-      type: "chunk",
-      value: filePath,
-      from: from,
-      timestamp: Date.now(),
-      request: false,
-      chunk: {
-        index: i,
-        size: nbytes,
-        data: buffer,
-        finish: i === chunkCount - 1,
-      }
-    };
-    const buf = Buffer.from(JSON.stringify(payload), "utf8");
-    udpClient.send(buf, remotePort, remoteAddr, (err) => {
-      if (err) {
-        errorLog(`发送文件块到 ${remoteAddr}:${remotePort} 失败: ${err.message}`);
-      }
-    });
+    
+    retryManager.sendWithRetry(
+      {
+        type: "chunk",
+        value: filePath,
+        from: from,
+        timestamp: Date.now(),
+        request: true, // 原始消息，需要确认
+        chunk: {
+          index: i,
+          size: nbytes,
+          data: buffer,
+          finish: i === chunkCount - 1,
+        }
+      },
+      remoteAddr,
+      remotePort
+    );
   }
   fs.closeSync(fd);
 }
@@ -239,68 +230,65 @@ udpClient.on("message", (data, rinfo) => {
 
     const msg = payload as ChatMessage;
 
+    // 检查是否为回复消息
+    if (msg.reply && msg.id) {
+      retryManager.markAsReceived(msg.id);
+    }
+
     if (msg.type === "link") {
       const isRequest = msg.request;
-      const typeStr = isRequest ? "request" : "reply";
+      const replyType = msg.reply ? "reply" : "request";
+      const requestType = isRequest ? "request" : "reply";
       log(
-        `[${new Date().toLocaleTimeString()}] 收到 link 消息来自 ${
-          rinfo.address
-        }:${rinfo.port} (ID: ${msg.from}, Type: ${typeStr})`
+        `[接收] type=link, from=${rinfo.address}:${rinfo.port}, request=${requestType}, reply=${replyType}`
       );
 
-      if (isRequest) {
-        const replyPayload: ChatMessage = {
-          type: "link",
-          from: getClientId(),
-          timestamp: Date.now(),
-          request: false,
-        };
-        const replyBuf = Buffer.from(JSON.stringify(replyPayload), "utf8");
-        udpClient.send(replyBuf, rinfo.port, rinfo.address, (err) => {
-          if (err) {
-            errorLog(
-              `发送 link 消息 (reply) 到 ${rinfo.address}:${rinfo.port} 失败: ${err.message}`
-            );
-          } else {
-            log(
-              `[${new Date().toLocaleTimeString()}] 已向 ${rinfo.address}:${rinfo.port} 发送 link 消息 (reply)`
-            );
-          }
-        });
+      if (isRequest && msg.id) {
+        retryManager.sendReply(
+          msg.id,
+          {
+            type: "link",
+            from: getClientId(),
+            timestamp: Date.now(),
+            request: false,
+          },
+          rinfo.address,
+          rinfo.port
+        );
+        log(
+          `[发送] type=link, to=${rinfo.address}:${rinfo.port}, request=reply, reply=true`
+        );
       }
       return;
     }
 
     if (msg.type === "chat") {
-      const nickname = msg.from || "未知";
-      const msgText =
-        typeof msg.value === "string" ? msg.value : "[二进制数据]";
+      const replyType = msg.reply ? "reply" : "request";
+      const requestType = msg.request ? "request" : "reply";
       log(
-        `[${new Date().toLocaleTimeString()}] ${nickname}@${rinfo.address}:${rinfo.port}: ${msgText}`
+        `[接收] type=chat, from=${rinfo.address}:${rinfo.port}, request=${requestType}, reply=${replyType}`
       );
       return;
     }
 
     if (msg.type === "file") {
-      const filePath = typeof msg.value === "string" ? msg.value : "";
-      const from = msg.from || "未知";
+      const replyType = msg.reply ? "reply" : "request";
+      const requestType = msg.request ? "request" : "reply";
       log(
-        `[${new Date().toLocaleTimeString()}] 收到文件请求来自 ${from}@${rinfo.address}:${rinfo.port}: ${filePath}`
+        `[接收] type=file, from=${rinfo.address}:${rinfo.port}, request=${requestType}, reply=${replyType}`
       );
+      const filePath = typeof msg.value === "string" ? msg.value : "";
       if (filePath) {
-        handleSendFile(filePath, from, rinfo.address, rinfo.port);
+        handleSendFile(filePath, msg.from, rinfo.address, rinfo.port);
       }
       return;
     }
 
+    // 其他类型消息（chunk等）
+    const replyType = msg.reply ? "reply" : "request";
+    const requestType = msg.request ? "request" : "reply";
     log(
-      `[${new Date().toLocaleTimeString()}] 收到 ${
-        msg.type || "未知"
-      } 消息来自 ${rinfo.address}:${rinfo.port}\n  ${JSON.stringify(
-        payload,
-        null,
-        2
-      )}`
+      `[接收] type=${msg.type || "未知"}, from=${rinfo.address}:${rinfo.port}, request=${requestType}, reply=${replyType}`
     );
   } catch (e) {
     errorLog(`处理消息时出错: ${e}`);
@@ -321,6 +309,11 @@ function shutdown() {
 }
 
 udpClient.bind(CLIENT_PORT, CLIENT_IP, () => {
+  // 初始化重试管理器
+  // 可以在这里配置重试参数，默认: retryInterval=5000ms, maxRetries=-1(无限重试)
+  const retryInterval = 5000; // 5秒
+  const maxRetries = -1; // 无限重试
+  retryManager = new MessageRetryManager(udpClient, retryInterval, maxRetries);
   printBanner();
 });
 

@@ -7,6 +7,7 @@ import { ChatViewProvider } from './chat_view_provider';
 // Your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
 	const provider = new ChatViewProvider(context.extensionUri, context);
+	
 	const sendViaLnimDisposable = vscode.commands.registerCommand(
 		'vscode-lnim.sendViaLnim',
 		async (uri: vscode.Uri, selectedUris: vscode.Uri[] | undefined) => {

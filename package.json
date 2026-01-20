@@ -5,7 +5,7 @@
   "description": "局域网内P2P通信工具",
   "version": "0.0.1",
   "engines": {
-    "vscode": "^1.108.0"
+    "vscode": "^1.104.3"
   },
   "categories": [
     "Other"
@@ -47,6 +47,24 @@
           "when": "resourceScheme == file"
         }
       ]
+    },
+    "configuration": {
+      "title": "LNIM",
+      "properties": {
+        "lnim.retryInterval": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 1000,
+          "maximum": 60000,
+          "description": "消息重试间隔时间（毫秒），默认 5000ms（5秒）"
+        },
+        "lnim.maxRetries": {
+          "type": "number",
+          "default": -1,
+          "minimum": -1,
+          "description": "最大重试次数，-1 表示无限重试，默认 -1"
+        }
+      }
     }
   },
   "scripts": {
