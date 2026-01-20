@@ -15,6 +15,7 @@ export interface ChatFileChunk {
   size: number;
   data: Buffer;
   finish: boolean;
+  total?: number;
 }
 
 export interface ChatMessage {
@@ -283,7 +284,13 @@ export class ChatMessageService {
   handleChunkMessage(payload: any, rinfo: dgram.RemoteInfo) {
     const data = payload as ChatMessage;
     
+    // 校验必填字段，防止处理无效消息
+    if (!data.chunk || typeof data.chunk.index !== 'number') {
+      return;
+    }
+
     // 发送回复消息确认收到文件块
+    // 必须在处理 saveChunk 之前或无论 saveChunk 是否成功都发送回复，否则发送方会无限重试
     if (data.id && !data.reply && this.retryManager && this.getSelfId) {
       this.retryManager.sendReply(
         data.id,
@@ -292,7 +299,7 @@ export class ChatMessageService {
           value: "",
           from: this.getSelfId(),
           timestamp: Date.now(),
-          request: data.request,
+          request: false,
         },
         rinfo.address,
         rinfo.port
@@ -365,8 +372,9 @@ export class ChatMessageService {
               chunk: {
                 index: i,
                 size: nbytes,
-                data: buffer.slice(0, nbytes), // 只发送实际读取的字节
+                data: buffer.subarray(0, nbytes), // 只发送实际读取的字节
                 finish: i === chunkCount - 1,
+                total: chunkCount,
               }
             },
             rinfo.address,

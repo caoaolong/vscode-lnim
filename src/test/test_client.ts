@@ -1,7 +1,7 @@
 import * as dgram from "dgram";
 import * as fs from "fs";
 import * as readline from "readline";
-import { ChatMessage, ChatFileChunk } from "../chat_message_service";
+import { ChatMessage } from "../chat_message_service";
 import { MessageRetryManager } from "../message_retry_manager";
 
 const CLIENT_IP = "192.168.10.21";
@@ -184,33 +184,55 @@ function sendFileMessage(filePath: string, ip: string, port: number) {
 
 const chunkSize: number = 1024;
 
-function handleSendFile(filePath: string, from: string, remoteAddr: string, remotePort: number) {
-  const stat = fs.statSync(filePath);
-  const chunkCount = Math.ceil(stat.size / chunkSize);
-  const fd = fs.openSync(filePath, "r");
-  for (let i = 0; i < chunkCount; i++) {
-    const buffer = Buffer.alloc(chunkSize);
-    const nbytes =fs.readSync(fd, buffer, 0, chunkSize, i * chunkSize);
-    
-    retryManager.sendWithRetry(
-      {
-        type: "chunk",
-        value: filePath,
-        from: from,
-        timestamp: Date.now(),
-        request: true, // 原始消息，需要确认
-        chunk: {
-          index: i,
-          size: nbytes,
-          data: buffer,
-          finish: i === chunkCount - 1,
-        }
-      },
-      remoteAddr,
-      remotePort
-    );
+function handleSendFile(filePath: string, from: string, remoteAddr: string, remotePort: number, requestMsgId: string) {
+  // 1. 发送 file 类型的 reply
+  retryManager.sendReply(
+    requestMsgId,
+    {
+      type: "file",
+      from: getClientId(),
+      timestamp: Date.now(),
+      request: false,
+      value: filePath,
+    },
+    remoteAddr,
+    remotePort
+  );
+  log(`[发送] type=file, to=${remoteAddr}:${remotePort}, type=reply, id=${requestMsgId}`);
+
+  try {
+    const stat = fs.statSync(filePath);
+    const chunkCount = Math.ceil(stat.size / chunkSize);
+    const fd = fs.openSync(filePath, "r");
+    for (let i = 0; i < chunkCount; i++) {
+      const buffer = Buffer.alloc(chunkSize);
+      const nbytes = fs.readSync(fd, buffer, 0, chunkSize, i * chunkSize);
+      
+      // 2. 发送 request 类型的 chunk
+      const chunkMsgId = retryManager.sendWithRetry(
+        {
+          type: "chunk",
+          value: filePath,
+          from: getClientId(),
+          timestamp: Date.now(),
+          request: true,
+          chunk: {
+            index: i,
+            size: nbytes,
+            data: buffer,
+            finish: i === chunkCount - 1,
+            total: chunkCount,
+          }
+        },
+        remoteAddr,
+        remotePort
+      );
+    }
+    fs.closeSync(fd);
+    log(`[发送] type=chunk, to=${remoteAddr}:${remotePort}, type=reply, id=${requestMsgId}, count=${chunkCount}`);
+  } catch (err) {
+    errorLog(`发送文件失败: ${err}`);
   }
-  fs.closeSync(fd);
 }
 
 
@@ -239,7 +261,7 @@ udpClient.on("message", (data, rinfo) => {
       const isRequest = msg.request;
 			const type = msg.request ? "request" : msg.reply ? "reply" : "unknown";
       log(
-        `[接收] type=link, from=${rinfo.address}:${rinfo.port}, type=${type}`
+        `[接收] type=link, from=${rinfo.address}:${rinfo.port}, type=${type}, id=${msg.id || "N/A"}`
       );
 
       if (isRequest && msg.id) {
@@ -255,39 +277,36 @@ udpClient.on("message", (data, rinfo) => {
           rinfo.port
         );
         log(
-          `[发送] type=link, to=${rinfo.address}:${rinfo.port}, type=reply`
+          `[发送] type=link, to=${rinfo.address}:${rinfo.port}, type=reply, id=${msg.id}`
         );
       }
       return;
     }
 
     if (msg.type === "chat") {
-      const replyType = msg.reply ? "reply" : "request";
-      const requestType = msg.request ? "request" : "reply";
+      const type = msg.request ? "request" : msg.reply ? "reply" : "unknown";
       log(
-        `[接收] type=chat, from=${rinfo.address}:${rinfo.port}, request=${requestType}, reply=${replyType}`
+        `[接收] type=chat, from=${rinfo.address}:${rinfo.port}, type=${type}, id=${msg.id || "N/A"}`
       );
       return;
     }
 
     if (msg.type === "file") {
-      const replyType = msg.reply ? "reply" : "request";
-      const requestType = msg.request ? "request" : "reply";
+      const type = msg.request ? "request" : msg.reply ? "reply" : "unknown";
       log(
-        `[接收] type=file, from=${rinfo.address}:${rinfo.port}, request=${requestType}, reply=${replyType}`
+        `[接收] type=file, from=${rinfo.address}:${rinfo.port}, type=${type}, id=${msg.id || "N/A"}`
       );
       const filePath = typeof msg.value === "string" ? msg.value : "";
-      if (filePath) {
-        handleSendFile(filePath, msg.from, rinfo.address, rinfo.port);
+      if (filePath && msg.request && msg.id) {
+        handleSendFile(filePath, msg.from, rinfo.address, rinfo.port, msg.id);
       }
       return;
     }
 
     // 其他类型消息（chunk等）
-    const replyType = msg.reply ? "reply" : "request";
-    const requestType = msg.request ? "request" : "reply";
+		const type = msg.request ? "request" : msg.reply ? "reply" : "unknown";
     log(
-      `[接收] type=${msg.type || "未知"}, from=${rinfo.address}:${rinfo.port}, request=${requestType}, reply=${replyType}`
+      `[接收] type=chunk, from=${rinfo.address}:${rinfo.port}, type=${type}, id=${msg.id || "N/A"}`
     );
   } catch (e) {
     errorLog(`处理消息时出错: ${e}`);

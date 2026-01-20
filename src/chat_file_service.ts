@@ -22,6 +22,12 @@ export interface ReceivedFile {
 export class ChatFileService {
   private readonly chunkSize: number = 1024;
   private fds: Map<string, number> = new Map();
+  // 存储文件下载进度的会话信息
+  private activeDownloads = new Map<string, {
+    resolve: () => void;
+    report: (value: { message?: string; increment?: number }) => void;
+    lastPercentage: number;
+  }>();
   rootPath: string;
   constructor(rootPath: string) {
     this.rootPath = rootPath;
@@ -225,6 +231,34 @@ export class ChatFileService {
     }
     const safePath = this.getSafeRelativePath(value);
     const filePath = path.join(this.rootPath, `${ip}_${port}`, safePath);
+    
+    // 初始化或获取进度条会话
+    const progressKey = `${ip}_${port}_${value}`;
+    if (!this.activeDownloads.has(progressKey) && chunk.total && chunk.total > 0) {
+      let resolveFunc: () => void;
+      const p = new Promise<void>((resolve) => {
+        resolveFunc = resolve;
+      });
+
+      vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: `正在接收文件: ${path.basename(value)}`,
+        cancellable: false
+      }, (progress) => {
+        const s = this.activeDownloads.get(progressKey);
+        if (s) {
+          s.report = progress.report;
+        }
+        return p;
+      });
+
+      this.activeDownloads.set(progressKey, {
+        resolve: resolveFunc!,
+        report: () => {}, // 占位符，等待 callback 替换
+        lastPercentage: 0
+      });
+    }
+
     if (this.fds.has(filePath)) {
       const fd = this.fds.get(filePath);
       if (!fd) {
@@ -237,9 +271,30 @@ export class ChatFileService {
         : Buffer.from((chunk.data as any).data);
 
       fs.writeSync(fd, buffer, 0, chunk.size, chunk.index * this.chunkSize);
+      
+      // 更新进度
+      const session = this.activeDownloads.get(progressKey);
+      if (session && chunk.total && chunk.total > 0) {
+        const percentage = Math.floor(((chunk.index + 1) / chunk.total) * 100);
+        const increment = percentage - session.lastPercentage;
+        if (increment > 0) {
+          // 如果 report 还没被替换（callback还没跑），这里调用可能会丢一次更新
+          // 但对于进度条来说问题不大，下次更新会补上
+          session.report({ increment, message: `${percentage}%` });
+          session.lastPercentage = percentage;
+        }
+      }
+
       if (chunk.finish) {
         fs.closeSync(fd);
         this.fds.delete(filePath);
+        
+        // 结束进度条
+        if (session) {
+          session.resolve();
+          this.activeDownloads.delete(progressKey);
+        }
+
         // 文件接收完成，在编辑器中打开文件
         this.openFileInEditor(filePath);
       }

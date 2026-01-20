@@ -731,6 +731,7 @@ function createMentionTag(item, opts) {
 
   $span.on("click", (e) => {
     e.stopPropagation();
+		console.log(opts);
     vscode.postMessage({
       type: "tagClicked",
       item: { type: item.type, value: item.value, label: item.label },

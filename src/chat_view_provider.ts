@@ -178,7 +178,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               type: "updateFiles",
               files: filesWithUsername,
             });
-            vscode.window.showInformationMessage(`文件 ${file.name} 已删除`);
           } else {
             vscode.window.showErrorMessage(`删除文件 ${file.name} 失败`);
           }

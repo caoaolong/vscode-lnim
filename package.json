@@ -81,6 +81,7 @@
   "devDependencies": {
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
+    "@types/uuid4": "^2.0.3",
     "@types/vscode": "^1.108.0",
     "@vscode/test-cli": "^0.0.12",
     "@vscode/test-electron": "^2.5.2",
@@ -94,6 +95,7 @@
   },
   "dependencies": {
     "@vscode/codicons": "^0.0.44",
-    "jquery": "^3.7.1"
+    "jquery": "^3.7.1",
+    "uuid4": "^2.0.3"
   }
 }
