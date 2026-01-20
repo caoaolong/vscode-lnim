@@ -61,6 +61,7 @@ export class MessageRetryManager {
     // 验证 request 和 reply 的互斥性
     if (fullMessage.request === false && fullMessage.reply === false) {
       console.error("错误：request 和 reply 不能同时为 false");
+			return "";
     }
 
     this.sendMessage(fullMessage, targetIp, targetPort);

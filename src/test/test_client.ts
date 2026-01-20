@@ -4,11 +4,11 @@ import * as readline from "readline";
 import { ChatMessage, ChatFileChunk } from "../chat_message_service";
 import { MessageRetryManager } from "../message_retry_manager";
 
-const CLIENT_IP = "10.110.4.12";
+const CLIENT_IP = "192.168.10.21";
 const CLIENT_PORT = 18081;
 const CLIENT_USERNAME = "TestClient";
 
-let remoteIp = "10.110.4.12";
+let remoteIp = "192.168.10.21";
 let remotePort = 18080;
 
 function getClientId(): string {
@@ -237,10 +237,9 @@ udpClient.on("message", (data, rinfo) => {
 
     if (msg.type === "link") {
       const isRequest = msg.request;
-      const replyType = msg.reply ? "reply" : "request";
-      const requestType = isRequest ? "request" : "reply";
+			const type = msg.request ? "request" : msg.reply ? "reply" : "unknown";
       log(
-        `[接收] type=link, from=${rinfo.address}:${rinfo.port}, request=${requestType}, reply=${replyType}`
+        `[接收] type=link, from=${rinfo.address}:${rinfo.port}, type=${type}`
       );
 
       if (isRequest && msg.id) {
@@ -256,7 +255,7 @@ udpClient.on("message", (data, rinfo) => {
           rinfo.port
         );
         log(
-          `[发送] type=link, to=${rinfo.address}:${rinfo.port}, request=reply, reply=true`
+          `[发送] type=link, to=${rinfo.address}:${rinfo.port}, type=reply`
         );
       }
       return;
