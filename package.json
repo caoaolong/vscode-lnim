@@ -1,10 +1,11 @@
 {
   "name": "vscode-lnim",
   "displayName": "vscode-lnim",
+  "publisher": "calong",
   "description": "局域网内P2P通信工具",
   "version": "0.0.1",
   "engines": {
-    "vscode": "^1.104.3"
+    "vscode": "^1.108.0"
   },
   "categories": [
     "Other"

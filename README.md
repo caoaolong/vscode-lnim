@@ -1,71 +1,46 @@
-# vscode-lnim README
+# vscode-lnim
 
-This is the README for your extension "vscode-lnim". After writing up a brief description, we recommend including the following sections.
+VS Code 局域网即时通讯扩展 (Local Network Instant Messenger)。
 
-## Features
+这是一个基于 VS Code 的轻量级局域网 P2P 通信工具，无需依赖外部服务器，即可在局域网内的不同 VS Code 实例之间发送消息、文件路径和代码片段。
 
-Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.
+## 功能特性 (Features)
 
-For example if there is an image subfolder under your extension project workspace:
+- **局域网通信**: 基于 UDP 协议的 P2P 通信，无需配置服务器。
+- **即时聊天**: 支持发送文本消息，实时接收。
+- **联系人管理**:
+  - 自动/手动添加局域网内的联系人。
+  - 显示联系人在线状态。
+- **文件与代码协作**:
+  - 快速发送工作区文件路径，点击即可在编辑器中打开。
+  - 支持发送图片路径。
+- **集成体验**:
+  - 嵌入在 VS Code 侧边栏，不打断编码心流。
+  - 快捷命令发送文件。
 
-\!\[feature X\]\(images/feature-x.png\)
+## 使用说明 (Usage)
 
-> Tip: Many popular extensions utilize animations. This is an excellent way to show off your extension! We recommend short, focused animations that are easy to follow.
+1. 安装扩展后，点击活动栏上的 "LNIM" 图标打开聊天视图。
+2. 首次使用建议在“设置”页面配置您的昵称。
+3. 在“联系人”页面添加局域网内其他运行此扩展的同事 IP 地址。
+4. 开始聊天！
 
-## Requirements
+## 扩展设置 (Extension Settings)
 
-If you have any requirements or dependencies, add a section describing those and how to install and configure them.
+本扩展主要通过内置的设置面板进行配置：
 
-## Extension Settings
+- **昵称**: 您的显示名称。
+- **端口**: 通信使用的 UDP 端口（默认为 18080）。
 
-Include if your extension adds any VS Code settings through the `contributes.configuration` extension point.
+## 已知问题 (Known Issues)
 
-For example:
-
-This extension contributes the following settings:
-
-* `myExtension.enable`: Enable/disable this extension.
-* `myExtension.thing`: Set to `blah` to do something.
-
-## Known Issues
-
-Calling out known issues can help limit users opening duplicate issues against your extension.
+- 目前仅支持局域网环境。
+- UDP 通信可能受防火墙影响，请确保允许 VS Code 进行网络通信。
 
 ## Release Notes
 
-Users appreciate release notes as you update your extension.
+### 0.0.1
 
-### 1.0.0
-
-Initial release of ...
-
-### 1.0.1
-
-Fixed issue #.
-
-### 1.1.0
-
-Added features X, Y, and Z.
-
----
-
-## Following extension guidelines
-
-Ensure that you've read through the extensions guidelines and follow the best practices for creating your extension.
-
-* [Extension Guidelines](https://code.visualstudio.com/api/references/extension-guidelines)
-
-## Working with Markdown
-
-You can author your README using Visual Studio Code. Here are some useful editor keyboard shortcuts:
-
-* Split the editor (`Cmd+\` on macOS or `Ctrl+\` on Windows and Linux).
-* Toggle preview (`Shift+Cmd+V` on macOS or `Shift+Ctrl+V` on Windows and Linux).
-* Press `Ctrl+Space` (Windows, Linux, macOS) to see a list of Markdown snippets.
-
-## For more information
-
-* [Visual Studio Code's Markdown Support](http://code.visualstudio.com/docs/languages/markdown)
-* [Markdown Syntax Reference](https://help.github.com/articles/markdown-basics/)
-
-**Enjoy!**
+- 初始版本发布。
+- 支持基础文本聊天、文件路径发送。
+- 支持联系人管理。
