@@ -1,5 +1,6 @@
 import * as dgram from "dgram";
 import * as vscode from "vscode";
+import * as fs from "fs";
 import { ChatMessageManager, ChatContact } from "./chat_message_manager";
 import { ChatFileMetadata, ChatFileService } from "./chat_file_service";
 export interface ChatUserSettings {
@@ -61,6 +62,7 @@ export class ChatMessageService {
   >();
   private readonly messageManager?: ChatMessageManager;
   private readonly fileService: ChatFileService;
+  private readonly chunkSize: number = 1024;
 
   constructor(port: number, options: ChatMessageServiceOptions) {
     this.currentPort = port || options.defaultPort;
@@ -270,16 +272,7 @@ export class ChatMessageService {
       this.udpServer.on("message", (data, rinfo) => {
         try {
           const text = data.toString();
-          console.log(
-            "UDP raw message from",
-            `${rinfo.address}:${rinfo.port}`,
-            "length",
-            data.length,
-            "data",
-            text,
-          );
           const trimmed = text.trim();
-
           if (
             !trimmed.startsWith("{") &&
             !trimmed.startsWith("[") &&
@@ -301,13 +294,15 @@ export class ChatMessageService {
           if (payload && payload.type === "link") {
             this.handleLinkMessage(payload, rinfo);
             return;
-          }
-          if (payload && payload.type === "chat") {
+          } else if (payload && payload.type === "chat") {
             this.handleChatMessage(payload);
             return;
-          }
-          if (payload && payload.type === "chunk") {
+          } else if (payload && payload.type === "chunk") {
             this.handleChunkMessage(payload, rinfo);
+            return;
+          } else if (payload && payload.type === "file") {
+            // 处理文件消息：收到文件请求后，读取本地文件并分块发送
+            this.handleFileMessage(payload, rinfo);
             return;
           }
         } catch (e) {
@@ -332,6 +327,77 @@ export class ChatMessageService {
     this.fileService.saveChunk(data.value, data.chunk, rinfo.address, rinfo.port);
   }
 
+  /**
+   * 处理文件消息：收到文件请求后，读取本地文件并分块发送
+   */
+  private handleFileMessage(payload: any, rinfo: dgram.RemoteInfo) {
+    const msg = payload as ChatMessage;
+    const filePath = typeof msg.value === "string" ? msg.value : "";
+    const from = msg.from || "";
+
+    if (!filePath) {
+      console.error("收到文件请求，但文件路径为空");
+      return;
+    }
+
+    if (!fs.existsSync(filePath)) {
+      console.error(`收到文件请求，但文件不存在: ${filePath}`);
+      vscode.window.showErrorMessage(`文件不存在: ${filePath}`);
+      return;
+    }
+
+    try {
+      const stat = fs.statSync(filePath);
+      
+      if (!stat.isFile()) {
+        console.error(`路径不是文件: ${filePath}`);
+        vscode.window.showErrorMessage(`路径不是文件: ${filePath}`);
+        return;
+      }
+
+      const chunkCount = Math.ceil(stat.size / this.chunkSize);
+      const fd = fs.openSync(filePath, "r");
+
+      // 分块读取并发送文件
+      for (let i = 0; i < chunkCount; i++) {
+        const buffer = Buffer.alloc(this.chunkSize);
+        const nbytes = fs.readSync(fd, buffer, 0, this.chunkSize, i * this.chunkSize);
+        
+        const chunkPayload: ChatMessage = {
+          type: "chunk",
+          value: filePath,
+          from: from,
+          timestamp: Date.now(),
+          chunk: {
+            index: i,
+            size: nbytes,
+            data: buffer.slice(0, nbytes), // 只发送实际读取的字节
+            finish: i === chunkCount - 1,
+          }
+        };
+
+        const buf = Buffer.from(JSON.stringify(chunkPayload), "utf8");
+        
+        if (this.udpServer) {
+          this.udpServer.send(buf, rinfo.port, rinfo.address, (err) => {
+            if (err) {
+              console.error(`发送文件块 ${i}/${chunkCount} 到 ${rinfo.address}:${rinfo.port} 失败:`, err);
+            }
+          });
+        }
+      }
+
+      fs.closeSync(fd);
+      
+      vscode.window.showInformationMessage(
+        `已向 ${rinfo.address}:${rinfo.port} 发送文件: ${filePath} (${chunkCount} 块)`
+      );
+    } catch (error) {
+      console.error("处理文件消息时出错:", error);
+      vscode.window.showErrorMessage(`处理文件请求失败: ${error}`);
+    }
+  }
+
   private handleLinkMessage(payload: any, rinfo: dgram.RemoteInfo) {
     const rawType = payload.linkType;
     if (rawType !== "request" && rawType !== "reply") {
@@ -339,6 +405,23 @@ export class ChatMessageService {
     }
     const linkType: "request" | "reply" = rawType;
     const isReply = linkType === "reply";
+
+    // 自动回复 LinkMessage（如果收到的是 request）
+    if (linkType === "request" && this.getSelfId && this.udpServer) {
+      const myId = this.getSelfId();
+      const replyPayload: ChatMessage = {
+        type: "link",
+        from: myId,
+        timestamp: Date.now(),
+        linkType: "reply",
+      };
+      const replyBuf = Buffer.from(JSON.stringify(replyPayload), "utf8");
+      this.udpServer.send(replyBuf, rinfo.port, rinfo.address, (err) => {
+        if (err) {
+          console.error("Failed to send LinkMessage reply:", err);
+        }
+      });
+    }
 
     // 通知收到 link 类型消息，让外部判断是否需要添加到联系人列表
     if (
@@ -352,6 +435,15 @@ export class ChatMessageService {
         id: payload.from,
         isReply,
       });
+    }
+
+    // 处理在线检测的待处理请求
+    const key = `${rinfo.address}:${rinfo.port}`;
+    const pending = this.pendingLinkChecks.get(key);
+    if (pending) {
+      this.pendingLinkChecks.delete(key);
+      clearTimeout(pending.timeout);
+      pending.resolve(true);
     }
   }
 
