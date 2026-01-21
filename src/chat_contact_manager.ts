@@ -5,78 +5,64 @@ type Contact = StoredContact;
 export interface LinkMessageResult {
   ip: string;
   port: number;
-  id?: string;
+  nickname: string;
   isReply: boolean;
 }
 
 export class ChatContactManager {
-  private contacts: Contact[];
+  private static contacts: Contact[] = [];
+  private static store: ChatDataStore;
 
-  constructor(
-    private readonly store: ChatDataStore,
-    private readonly defaultPort: number
-  ) {
+  public static init(store: ChatDataStore) {
+    this.store = store;
     this.contacts = this.store.getContacts();
   }
 
-  public getContacts(): Contact[] {
+  public static getContacts(): Contact[] {
     return this.contacts;
   }
 
-  public async resetAllStatuses(): Promise<Contact[]> {
+  public static async resetAllStatuses(): Promise<Contact[]> {
     this.contacts = await this.store.resetAllContactsStatus();
     return this.contacts;
   }
 
-  public async deleteContact(contact: Contact): Promise<Contact[]> {
+  public static async deleteContact(contact: Contact): Promise<Contact[]> {
     this.contacts = await this.store.deleteContact(contact);
     return this.contacts;
   }
 
-  public async handleLinkMessage(
-    result: LinkMessageResult
+  public static async handleLinkMessage(
+    result: LinkMessageResult,
   ): Promise<Contact[] | undefined> {
     if (!result.isReply) {
       return;
     }
 
     const existingContact = this.contacts.find(
-      (c) =>
-        c.ip === result.ip &&
-        (c.port || this.defaultPort) === (result.port || this.defaultPort)
+      (c) => c.ip === result.ip && c.port === result.port,
     );
 
     if (existingContact) {
       this.contacts = await this.store.updateContactStatus(
         result.ip,
         result.port,
-        true
+        true,
       );
-    } else if (result.id) {
-      let username = `用户_${result.ip}`;
-      try {
-        const decoded = Buffer.from(result.id, "base64").toString("utf8");
-        const parts = decoded.split("-");
-        if (parts.length > 0 && parts[0]) {
-          username = parts[0];
-        }
-      } catch {
-      }
-
+    } else {
       const contact: Contact = {
         ip: result.ip,
         port: result.port,
-        username,
+        username: result.nickname,
       };
       this.contacts = await this.store.addContact(contact);
       this.contacts = await this.store.updateContactStatus(
         result.ip,
         result.port,
-        true
+        true,
       );
     }
 
     return this.contacts;
   }
 }
-

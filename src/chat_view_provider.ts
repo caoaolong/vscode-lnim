@@ -9,10 +9,7 @@ import {
   StoredContact,
   StoredUserSettings,
 } from "./chat_data_store";
-import {
-  ChatContactManager,
-  LinkMessageResult,
-} from "./chat_contact_manager";
+import { ChatContactManager, LinkMessageResult } from "./chat_contact_manager";
 import { ChatFileService } from "./chat_file_service";
 
 type UserSettings = StoredUserSettings;
@@ -29,24 +26,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private readonly _store: ChatDataStore;
   private readonly _messageService: ChatMessageService;
   private readonly _messageManager: ChatMessageManager;
-  private readonly _contactManager: ChatContactManager;
   private readonly _chatFileService: ChatFileService;
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
-    private readonly _context: vscode.ExtensionContext
+    private readonly _context: vscode.ExtensionContext,
   ) {
     this._store = new ChatDataStore(this._context);
     this._userSettings = this._store.getUserSettings();
-    this._contactManager = new ChatContactManager(
-      this._store,
-      ChatViewProvider.DEFAULT_PORT
-    );
-    this._contactManager.resetAllStatuses();
+    ChatContactManager.init(this._store);
+    ChatContactManager.resetAllStatuses();
     this._currentPort =
       this._userSettings.port || ChatViewProvider.DEFAULT_PORT;
-    this._messageManager = new ChatMessageManager(this._context.globalStorageUri.fsPath);
-    this._chatFileService = new ChatFileService(this._context.globalStorageUri.fsPath);
+    this._messageManager = new ChatMessageManager(
+      this._context.globalStorageUri.fsPath,
+    );
+    this._chatFileService = new ChatFileService(
+      this._context.globalStorageUri.fsPath,
+    );
     this._messageService = new ChatMessageService(this._currentPort, {
       view: this._view,
       defaultPort: ChatViewProvider.DEFAULT_PORT,
@@ -55,7 +52,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.handleLinkMessageReceived(result);
       },
       context: this._context,
-      fileService: this._chatFileService
+      fileService: this._chatFileService,
     });
   }
 
@@ -67,7 +64,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   public resolveWebviewView(
     webviewView: vscode.WebviewView,
     _context: vscode.WebviewViewResolveContext,
-    _token: vscode.CancellationToken
+    _token: vscode.CancellationToken,
   ) {
     this._view = webviewView;
     this._messageService.attachView(webviewView);
@@ -84,15 +81,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       ],
     };
 
-    webviewView.webview.html = this._getHtmlForWebview(webviewView.webview, "chat");
+    webviewView.webview.html = this._getHtmlForWebview(
+      webviewView.webview,
+      "chat",
+    );
     webviewView.webview.onDidReceiveMessage(async (data) => {
       switch (data.type) {
         case "navigate": {
           const page = data.page || "chat";
           if (page === "contacts") {
-            await this._contactManager.resetAllStatuses();
+            await ChatContactManager.resetAllStatuses();
           }
-          webviewView.webview.html = this._getHtmlForWebview(webviewView.webview, page);
+          webviewView.webview.html = this._getHtmlForWebview(
+            webviewView.webview,
+            page,
+          );
           break;
         }
         case "saveSettings": {
@@ -131,16 +134,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case "getContacts": {
           webviewView.webview.postMessage({
             type: "updateContacts",
-            contacts: this._contactManager.getContacts(),
+            contacts: ChatContactManager.getContacts(),
           });
           break;
         }
         case "getFiles": {
           const files = this._chatFileService.getFiles();
           // 尝试从联系人中获取用户名
-          const contacts = this._contactManager.getContacts();
-          const filesWithUsername = files.map(file => {
-            const contact = contacts.find(c => c.ip === file.ip && c.port === file.port);
+          const contacts = ChatContactManager.getContacts();
+          const filesWithUsername = files.map((file) => {
+            const contact = contacts.find(
+              (c) => c.ip === file.ip && c.port === file.port,
+            );
             return {
               ...file,
               sender: contact?.username || file.sender,
@@ -157,7 +162,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const answer = await vscode.window.showWarningMessage(
             `确定要删除文件 ${file.name} 吗？此操作不可撤销。`,
             "删除",
-            "取消"
+            "取消",
           );
           if (answer !== "删除") {
             break;
@@ -166,9 +171,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (success) {
             // 刷新文件列表
             const files = this._chatFileService.getFiles();
-            const contacts = this._contactManager.getContacts();
-            const filesWithUsername = files.map(f => {
-              const contact = contacts.find(c => c.ip === f.ip && c.port === f.port);
+            const contacts = ChatContactManager.getContacts();
+            const filesWithUsername = files.map((f) => {
+              const contact = contacts.find(
+                (c) => c.ip === f.ip && c.port === f.port,
+              );
               return {
                 ...f,
                 sender: contact?.username || f.sender,
@@ -191,8 +198,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case "warning": {
           const warningType = (data as any).warningType;
           if (warningType === "noTargetSelected") {
-            vscode.window.showWarningMessage("请先在上方选择至少一个联系人后再发送消息");
-          } else if (typeof (data as any).message === "string" && (data as any).message) {
+            vscode.window.showWarningMessage(
+              "请先在上方选择至少一个联系人后再发送消息",
+            );
+          } else if (
+            typeof (data as any).message === "string" &&
+            (data as any).message
+          ) {
             vscode.window.showWarningMessage((data as any).message);
           }
           break;
@@ -218,14 +230,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             targetPort > 65535
           ) {
             vscode.window.showErrorMessage(
-              "主机地址格式必须为 IP:有效端口(1-65535)"
+              "主机地址格式必须为 IP:有效端口(1-65535)",
             );
             break;
           }
 
           vscode.window.setStatusBarMessage(
             `正在向 ${targetIp}:${targetPort} 发送链接检测消息...`,
-            2000
+            2000,
           );
 
           // 创建临时联系人用于发送扫描消息
@@ -252,12 +264,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const answer = await vscode.window.showWarningMessage(
             `确定要删除联系人 ${c.username || c.ip} 吗？`,
             "删除",
-            "取消"
+            "取消",
           );
           if (answer !== "删除") {
             break;
           }
-          const contacts = await this._contactManager.deleteContact(c);
+          const contacts = await ChatContactManager.deleteContact(c);
           webviewView.webview.postMessage({
             type: "contactsSaved",
             contacts,
@@ -269,7 +281,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const answer = await vscode.window.showWarningMessage(
             `确定要清空与 ${c.username || c.ip} 的聊天记录吗？此操作不可撤销。`,
             "清空",
-            "取消"
+            "取消",
           );
           if (answer !== "清空") {
             break;
@@ -281,7 +293,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const answer = await vscode.window.showWarningMessage(
             "确定要清空所有聊天记录吗？此操作不可撤销。",
             "清空所有",
-            "取消"
+            "取消",
           );
           if (answer !== "清空所有") {
             break;
@@ -395,7 +407,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             const from = data.from;
             if (from) {
               const [ip, port, username] = from.split("|");
-              this._chatFileService.download({ ip, port: parseInt(port), username, path: absolutePath }, this._messageService);
+              this._chatFileService.download(
+                { ip, port: parseInt(port), username, path: absolutePath },
+                this._messageService,
+              );
             }
           } else {
             const label = item?.label ?? item?.value ?? "";
@@ -441,7 +456,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         });
       } catch {
         vscode.window.showErrorMessage(
-          `无法发送资源: ${uri.fsPath || uri.toString()}`
+          `无法发送资源: ${uri.fsPath || uri.toString()}`,
         );
       }
     }
@@ -507,7 +522,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const htmlPath = path.join(
       this._extensionUri.fsPath,
       "resources",
-      `${page}.html`
+      `${page}.html`,
     );
     try {
       let html = fs.readFileSync(htmlPath, "utf-8");
@@ -522,7 +537,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         "node_modules",
         "jquery",
         "dist",
-        "jquery.min.js"
+        "jquery.min.js",
       );
       const codiconsCssUri = this._getLocalResourceUri(
         webview,
@@ -530,32 +545,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         "@vscode",
         "codicons",
         "dist",
-        "codicon.css"
+        "codicon.css",
       );
       const chatCssUri = this._getLocalResourceUri(
         webview,
         "resources",
-        "chat.css"
+        "chat.css",
       );
       const chatJsUri = this._getLocalResourceUri(
         webview,
         "resources",
-        "chat.js"
+        "chat.js",
       );
       const settingsJsUri = this._getLocalResourceUri(
         webview,
         "resources",
-        "settings.js"
+        "settings.js",
       );
       const contactsJsUri = this._getLocalResourceUri(
         webview,
         "resources",
-        "contacts.js"
+        "contacts.js",
       );
       const filesJsUri = this._getLocalResourceUri(
         webview,
         "resources",
-        "files.js"
+        "files.js",
       );
 
       // Replace placeholders in the HTML file
@@ -596,7 +611,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async handleLinkMessageReceived(result: LinkMessageResult) {
-    const contacts = await this._contactManager.handleLinkMessage(result);
+    const contacts = await ChatContactManager.handleLinkMessage(result);
     if (!contacts) {
       return;
     }
@@ -608,7 +623,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       });
     }
   }
-  
+
   /**
    * 清理资源
    */
