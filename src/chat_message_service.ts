@@ -33,6 +33,8 @@ export interface ChatMessage {
   sessionId?: string;
   // type=chunk时，表示请求的chunk索引列表（用于增量下载）
   requestChunks?: number[];
+  // type=link时，标识是否为回复消息（用于防止无限循环）
+  isReply?: boolean;
 }
 
 export interface ChatMessageServiceOptions {
@@ -44,6 +46,7 @@ export interface ChatMessageServiceOptions {
     ip: string;
     port: number;
     id?: string;
+    isReply: boolean;
   }) => void;
   context: vscode.ExtensionContext;
 }
@@ -58,6 +61,7 @@ export class ChatMessageService {
     ip: string;
     port: number;
     id?: string;
+    isReply: boolean;
   }) => void;
   private readonly messageManager?: ChatMessageManager;
   private readonly fileService: ChatFileService;
@@ -232,6 +236,7 @@ export class ChatMessageService {
         type: "link",
         from: fromId,
         timestamp: Date.now(),
+        isReply: false, // 主动发送的link消息，不是回复
       },
       contact.ip,
       targetPort
@@ -441,12 +446,30 @@ export class ChatMessageService {
   }
 
   private handleLinkMessage(payload: any, rinfo: dgram.RemoteInfo) {
-    // 通知收到 link 类型消息
+    const msg = payload as ChatMessage;
+    
+    // 只在收到非回复的link消息时才回复（防止无限循环）
+    if (!msg.isReply) {
+      const fromId = this.getSelfId ? this.getSelfId() : "";
+      this.sendMessage(
+        {
+          type: "link",
+          from: fromId,
+          timestamp: Date.now(),
+          isReply: true, // 标记为回复消息
+        },
+        rinfo.address,
+        rinfo.port
+      );
+    }
+    
+    // 通知收到 link 类型消息，并传递isReply状态
     if (typeof payload.from === "string" && this.onLinkMessageReceived) {
       this.onLinkMessageReceived({
         ip: rinfo.address,
         port: rinfo.port,
         id: payload.from,
+        isReply: msg.isReply || false, // 传递原始的isReply状态
       });
     }
   }

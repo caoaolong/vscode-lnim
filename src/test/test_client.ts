@@ -176,6 +176,7 @@ function sendLink(ip: string, port: number) {
       type: "link",
       from: getClientId(),
       timestamp: Date.now(),
+      isReply: false, // 主动发送的link消息
     },
     ip,
     port
@@ -294,7 +295,22 @@ udpClient.on("message", (data, rinfo) => {
     const msg = payload as ChatMessage;
 
     if (msg.type === "link") {
-      log(`[接收] type=link, from=${rinfo.address}:${rinfo.port}`);
+      log(`[接收] type=link, from=${rinfo.address}:${rinfo.port}, isReply=${msg.isReply || false}`);
+      
+      // 只在收到非回复的link消息时才回复（防止无限循环）
+      if (!msg.isReply) {
+        sendMessage(
+          {
+            type: "link",
+            from: getClientId(),
+            timestamp: Date.now(),
+            isReply: true, // 标记为回复消息
+          },
+          rinfo.address,
+          rinfo.port
+        );
+        log(`[自动回复] type=link, to=${rinfo.address}:${rinfo.port}, isReply=true`);
+      }
       return;
     }
 
