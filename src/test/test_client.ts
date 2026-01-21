@@ -18,6 +18,17 @@ function getClientId(): string {
   ).toString("base64");
 }
 
+/**
+ * 从跨平台路径中提取文件名
+ * 支持 Windows 路径（C:\path\file.txt）和 Unix 路径（/path/file.txt）
+ */
+function extractFileName(filePath: string): string {
+  // 统一处理反斜杠和正斜杠
+  const normalizedPath = filePath.replace(/\\/g, '/');
+  const parts = normalizedPath.split('/');
+  return parts[parts.length - 1] || 'unknown_file';
+}
+
 const udpClient = dgram.createSocket("udp4");
 let retryManager: MessageRetryManager;
 
@@ -45,6 +56,31 @@ interface FileSendSession {
   targetPort: number;
 }
 const fileSendSessions = new Map<string, FileSendSession>();
+
+// 消息去重：记录最近处理的消息ID（request消息）
+const processedRequestMessages = new Set<string>();
+const MAX_PROCESSED_MESSAGES = 1000; // 最多记录1000条
+
+/**
+ * 检查并记录消息ID，如果已处理过则返回true
+ */
+function isDuplicateRequest(messageId: string): boolean {
+  if (processedRequestMessages.has(messageId)) {
+    return true;
+  }
+  
+  processedRequestMessages.add(messageId);
+  
+  // 限制缓存大小，防止内存泄漏
+  if (processedRequestMessages.size > MAX_PROCESSED_MESSAGES) {
+    const firstId = processedRequestMessages.values().next().value as string;
+    if (firstId) {
+      processedRequestMessages.delete(firstId);
+    }
+  }
+  
+  return false;
+}
 
 const rl = readline.createInterface({
   input: process.stdin,
@@ -302,6 +338,33 @@ udpClient.on("message", (data, rinfo) => {
     // 检查是否为回复消息
     if (msg.reply && msg.id) {
       retryManager.markAsReceived(msg.id);
+      // Reply 消息不需要去重检查，因为它们是对我们发出的 request 的响应
+      // 可以直接返回，不再处理（reply消息通常只用于确认，不需要额外处理）
+      return;
+    }
+
+    // 检查 request 消息是否重复
+    if (msg.request && msg.id) {
+      if (isDuplicateRequest(msg.id)) {
+        // 重复的 request 消息，忽略（但仍需发送 reply 确认）
+        // 注意：对于某些消息类型（如link、file），我们仍然需要发送reply
+        // 但不执行实际的业务逻辑（如创建文件会话等）
+        log(`[去重] 忽略重复的 ${msg.type} request, id=${msg.id}`);
+        
+        // 发送简单的 reply 确认
+        retryManager.sendReply(
+          msg.id,
+          {
+            type: msg.type,
+            from: getClientId(),
+            timestamp: Date.now(),
+            request: false,
+          },
+          rinfo.address,
+          rinfo.port
+        );
+        return;
+      }
     }
 
     if (msg.type === "link") {
@@ -382,7 +445,8 @@ udpClient.on("message", (data, rinfo) => {
           
           // 首次接收该文件的 chunk，创建会话
           if (!session && msg.chunk.total) {
-            const receivePath = `./received_${Date.now()}_${msg.value.split('/').pop()}`;
+            const fileName = extractFileName(msg.value);
+            const receivePath = `./received_${Date.now()}_${fileName}`;
             const fd = fs.openSync(receivePath, 'w');
             session = {
               filePath: receivePath,
@@ -572,7 +636,7 @@ udpClient.on("message", (data, rinfo) => {
             errorLog(`关闭文件句柄失败: ${error}`);
           }
           fileSendSessions.delete(sessionId || "");
-          log(`[文件发送] 传输完成，会话已清理: ${session.filePath.split('/').pop()}`);
+          log(`[文件发送] 传输完成，会话已清理: ${extractFileName(session.filePath)}`);
         }
       }
       return;
