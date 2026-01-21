@@ -285,14 +285,21 @@ export class ChatMessageService {
       this.udpServer = dgram.createSocket("udp4");
       
       // 增大UDP接收缓冲区，避免高速传输时丢包
-      // 从配置中读取缓冲区大小，默认8MB
+      // 从配置中读取缓冲区大小，默认16MB（增大以应对大文件传输）
       const config = vscode.workspace.getConfiguration('lnim');
-      const bufferSize = config.get<number>('udpRecvBufferSize', 8 * 1024 * 1024);
+      const bufferSize = config.get<number>('udpRecvBufferSize', 16 * 1024 * 1024);
       
       try {
         this.udpServer.setRecvBufferSize(bufferSize);
+        const actualSize = this.udpServer.getRecvBufferSize();
         const bufferSizeMB = (bufferSize / (1024 * 1024)).toFixed(2);
-        console.log(`[UDP] 接收缓冲区已设置为 ${bufferSizeMB} MB (${bufferSize} 字节)`);
+        const actualSizeMB = (actualSize / (1024 * 1024)).toFixed(2);
+        console.log(`[UDP] 接收缓冲区请求大小: ${bufferSizeMB} MB, 实际大小: ${actualSizeMB} MB`);
+        
+        if (actualSize < bufferSize) {
+          console.warn(`[UDP] 警告：实际缓冲区大小(${actualSizeMB} MB)小于请求大小(${bufferSizeMB} MB)`);
+          console.warn(`[UDP] 可能需要调整系统参数。macOS: sudo sysctl -w net.inet.udp.recvspace=${bufferSize}`);
+        }
       } catch (error) {
         console.warn('[UDP] 无法设置接收缓冲区大小:', error);
         console.warn('[UDP] 将使用系统默认缓冲区大小，大文件传输可能不稳定');
@@ -440,9 +447,10 @@ export class ChatMessageService {
     targetIp: string,
     targetPort: number
   ) {
-    // chunk大小从1024降到256，为保持相同性能，批量大小增加到200
-    // 200个chunk × 256 bytes = 51.2 KB/批
-    const batchSize = 200;
+    // 降低批次大小，增加延迟时间，确保接收端有足够时间处理
+    // 100个chunk × 256 bytes = 25.6 KB/批
+    const batchSize = 100;
+    const batchDelay = 20; // 增加到20ms
     
     for (let batchStart = 0; batchStart < chunksToSend.length; batchStart += batchSize) {
       const batchEnd = Math.min(batchStart + batchSize, chunksToSend.length);
@@ -481,15 +489,15 @@ export class ChatMessageService {
       
       // 每批次之间延迟，给接收方时间处理
       if (batchEnd < chunksToSend.length) {
-        await new Promise(resolve => setTimeout(resolve, 10));
+        await new Promise(resolve => setTimeout(resolve, batchDelay));
         
-        if (batchEnd % 2000 === 0 || batchEnd === chunksToSend.length) {
-          console.log(`[handleChunkMessage] 已发送chunk ${batchEnd}/${chunkCount}`);
+        if (batchEnd % 1000 === 0 || batchEnd === chunksToSend.length) {
+          console.log(`[sendChunksWithDelay] 已发送chunk ${batchEnd}/${chunkCount}`);
         }
       }
     }
     
-    console.log(`[handleChunkMessage] 完成发送所有chunk`);
+    console.log(`[sendChunksWithDelay] 完成发送所有chunk`);
   }
   
   /**

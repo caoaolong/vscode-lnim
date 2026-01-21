@@ -66,10 +66,10 @@
         },
         "lnim.udpRecvBufferSize": {
           "type": "number",
-          "default": 8388608,
+          "default": 16777216,
           "minimum": 262144,
-          "maximum": 33554432,
-          "description": "UDP接收缓冲区大小（字节），默认 8MB (8388608字节)。范围: 256KB - 32MB。较大的缓冲区可以提高大文件传输的可靠性，但会占用更多内存。"
+          "maximum": 67108864,
+          "description": "UDP接收缓冲区大小（字节），默认 16MB (16777216字节)。范围: 256KB - 64MB。较大的缓冲区可以提高大文件传输的可靠性，但会占用更多内存。注意：操作系统可能有限制，macOS可用 sudo sysctl -w net.inet.udp.recvspace=16777216 调整。"
         }
       }
     }

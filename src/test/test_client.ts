@@ -253,9 +253,10 @@ async function handleChunkRequest(filePath: string, remoteAddr: string, remotePo
     // 确定要发送的chunk列表
     const chunksToSend = requestChunks || Array.from({length: chunkCount}, (_, i) => i);
     
-    // chunk大小从1024降到256，为保持相同性能，批量大小增加到200
-    // 200个chunk × 256 bytes = 51.2 KB/批
-    const batchSize = 200;
+    // 降低批次大小，增加延迟时间，确保接收端有足够时间处理
+    // 100个chunk × 256 bytes = 25.6 KB/批
+    const batchSize = 100;
+    const batchDelay = 20; // 增加到20ms
     
     // 批量发送chunk，避免UDP缓冲区溢出
     for (let batchStart = 0; batchStart < chunksToSend.length; batchStart += batchSize) {
@@ -293,7 +294,11 @@ async function handleChunkRequest(filePath: string, remoteAddr: string, remotePo
       
       // 每批次之间延迟，给接收方时间处理
       if (batchEnd < chunksToSend.length) {
-        await new Promise(resolve => setTimeout(resolve, 10));
+        await new Promise(resolve => setTimeout(resolve, batchDelay));
+        
+        if (batchEnd % 1000 === 0) {
+          log(`[文件发送] 进度: ${Math.floor((batchEnd / chunkCount) * 100)}% (${batchEnd}/${chunkCount})`);
+        }
       }
     }
     
@@ -496,9 +501,17 @@ function shutdown() {
 udpClient.bind(CLIENT_PORT, CLIENT_IP, () => {
   // 增大UDP接收缓冲区，避免高速传输时丢包
   try {
-    // 设置接收缓冲区为8MB
-    udpClient.setRecvBufferSize(8 * 1024 * 1024);
-    log('[UDP] 接收缓冲区已设置为 8MB');
+    // 设置接收缓冲区为16MB（增大以应对大文件传输）
+    const bufferSize = 16 * 1024 * 1024;
+    udpClient.setRecvBufferSize(bufferSize);
+    const actualSize = udpClient.getRecvBufferSize();
+    const bufferSizeMB = (bufferSize / (1024 * 1024)).toFixed(2);
+    const actualSizeMB = (actualSize / (1024 * 1024)).toFixed(2);
+    log(`[UDP] 接收缓冲区请求大小: ${bufferSizeMB} MB, 实际大小: ${actualSizeMB} MB`);
+    
+    if (actualSize < bufferSize) {
+      log(`[UDP] 警告：实际缓冲区大小小于请求大小，可能需要调整系统参数`);
+    }
   } catch (error) {
     errorLog(`[UDP] 无法设置接收缓冲区大小: ${error}`);
   }
