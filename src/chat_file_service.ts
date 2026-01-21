@@ -20,20 +20,6 @@ export interface ReceivedFile {
   completed: boolean; // 新增：标记文件是否接收完成
 }
 
-// 文件接收状态持久化数据
-interface FileTransferState {
-  sessionId: string;
-  filePath: string; // 原始文件路径
-  localPath: string; // 本地保存路径
-  originalFileName: string;
-  totalChunks: number;
-  receivedChunks: number[]; // 已接收的chunk索引
-  senderIp: string;
-  senderPort: number;
-  completed: boolean; // 是否已完成
-  timestamp: number;
-}
-
 export class ChatFileService {
   // 优化chunk大小以适应MTU限制，避免IP分片
   // 与ChatMessageService保持一致
@@ -56,13 +42,10 @@ export class ChatFileService {
   
   rootPath: string;
   private messageServiceRef?: ChatMessageService;
-  private readonly stateDir: string; // 状态持久化目录
   
   constructor(rootPath: string) {
     this.rootPath = rootPath;
     fs.mkdirSync(`${this.rootPath}/files`, { recursive: true });
-    this.stateDir = path.join(this.rootPath, '.file_states');
-    fs.mkdirSync(this.stateDir, { recursive: true });
   }
   
   public setMessageService(messageService: ChatMessageService): void {
@@ -176,10 +159,6 @@ export class ChatFileService {
             fullPath
           );
           
-          // 检查文件的接收状态
-          const stateKey = `${ip}_${port}_${relativePath}`;
-          const completed = this.isFileCompleted(stateKey);
-          
           files.push({
             path: fullPath,
             name: entry.name,
@@ -187,47 +166,12 @@ export class ChatFileService {
             sender: `${ip}:${port}`,
             ip,
             port,
-            completed, // 标记是否已完成
+            completed: true, // 简化：假设已下载的文件都是完整的
           });
         }
       }
     } catch (error) {
       console.error(`扫描目录失败 ${dirPath}:`, error);
-    }
-  }
-
-  /**
-   * 检查文件是否接收完成
-   */
-  private isFileCompleted(stateKey: string): boolean {
-    const state = this.loadFileState(stateKey);
-    return state ? state.completed : false;
-  }
-
-  /**
-   * 加载文件传输状态
-   */
-  private loadFileState(stateKey: string): FileTransferState | null {
-    try {
-      const stateFile = path.join(this.stateDir, `${stateKey.replace(/[/\\:]/g, '_')}.json`);
-      if (fs.existsSync(stateFile)) {
-        return JSON.parse(fs.readFileSync(stateFile, 'utf-8'));
-      }
-    } catch (error) {
-      console.error('加载文件状态失败:', error);
-    }
-    return null;
-  }
-
-  /**
-   * 保存文件传输状态
-   */
-  private saveFileState(stateKey: string, state: FileTransferState): void {
-    try {
-      const stateFile = path.join(this.stateDir, `${stateKey.replace(/[/\\:]/g, '_')}.json`);
-      fs.writeFileSync(stateFile, JSON.stringify(state, null, 2));
-    } catch (error) {
-      console.error('保存文件状态失败:', error);
     }
   }
 
@@ -238,9 +182,6 @@ export class ChatFileService {
     try {
       if (fs.existsSync(filePath)) {
         fs.unlinkSync(filePath);
-        
-        // 删除对应的状态文件
-        // TODO: 根据 filePath 找到对应的 stateKey 并删除状态文件
         
         // 如果文件所在目录为空，尝试删除目录
         const dirPath = path.dirname(filePath);
@@ -285,46 +226,6 @@ export class ChatFileService {
       safePath,
     );
     const filename = path.basename(file.path);
-    const stateKey = `${file.ip}_${file.port}_${safePath}`;
-
-    console.log(`[download] targetPath: ${targetPath}, stateKey: ${stateKey}`);
-
-    // 检查是否有未完成的传输
-    const existingState = this.loadFileState(stateKey);
-    
-    if (existingState && !existingState.completed) {
-      // 有未完成的传输，询问用户是继续还是重新开始
-      const answer = await vscode.window.showInformationMessage(
-        `文件 ${filename} 有未完成的传输（已接收 ${existingState.receivedChunks.length}/${existingState.totalChunks} 块），要继续吗？`,
-        "继续",
-        "重新开始",
-        "取消"
-      );
-      
-      if (answer === "继续") {
-        // 请求缺失的 chunk
-        const missingChunks: number[] = [];
-        const receivedSet = new Set(existingState.receivedChunks);
-        for (let i = 0; i < existingState.totalChunks; i++) {
-          if (!receivedSet.has(i)) {
-            missingChunks.push(i);
-          }
-        }
-        
-        if (missingChunks.length > 0) {
-          messageService.sendFileRequest(file, missingChunks);
-        }
-        return;
-      } else if (answer === "重新开始") {
-        // 删除旧文件和状态
-        if (fs.existsSync(targetPath)) {
-          fs.unlinkSync(targetPath);
-        }
-        // 状态会在开始新传输时被覆盖
-      } else {
-        return; // 取消
-      }
-    }
 
     if (fs.existsSync(targetPath) && fs.statSync(targetPath).size > 0) {
       // 文件已存在且完整
@@ -456,43 +357,10 @@ export class ChatFileService {
         console.log(`[saveChunk] 进度更新: ${percentage}%`);
       }
     }
-    
-    // 每10个chunk保存一次状态
-    if (session.receivedChunks.size % 10 === 0) {
-      this.saveFileState(stateKey, {
-        sessionId: session.sessionId,
-        filePath: session.originalFilePath,
-        localPath: filePath,
-        originalFileName: session.originalFileName,
-        totalChunks: session.totalChunks,
-        receivedChunks: Array.from(session.receivedChunks),
-        senderIp: session.senderIp,
-        senderPort: session.senderPort,
-        completed: false,
-        timestamp: Date.now()
-      });
-      console.log(`[saveChunk] 状态已保存 - 已接收: ${session.receivedChunks.size}/${session.totalChunks}`);
-    }
 
     // 检查是否接收完成（已收到所有chunk）
     if (chunk.total && session.receivedChunks.size === chunk.total) {
       console.log(`[saveChunk] 🎉 文件传输完成！${path.basename(value)}，共 ${chunk.total} 个块`);
-      
-      // 保存完成状态
-      this.saveFileState(stateKey, {
-        sessionId: session.sessionId,
-        filePath: session.originalFilePath,
-        localPath: filePath,
-        originalFileName: session.originalFileName,
-        totalChunks: session.totalChunks,
-        receivedChunks: Array.from(session.receivedChunks),
-        senderIp: session.senderIp,
-        senderPort: session.senderPort,
-        completed: true,
-        timestamp: Date.now()
-      });
-      
-      console.log(`[saveChunk] 完成状态已保存`);
       
       // 发送接收完成确认
       if (this.messageServiceRef) {
