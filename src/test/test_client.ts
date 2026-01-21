@@ -276,7 +276,7 @@ function handleSendFile(filePath: string, from: string, remoteAddr: string, remo
     }
     
     // 不在这里关闭 fd，等待传输完成确认后再关闭
-    log(`[发送] type=chunk, to=${remoteAddr}:${remotePort}, type=reply, id=${requestMsgId}, count=${chunkCount}, 等待传输完成确认...`);
+    log(`[文件发送] 已发送 ${chunkCount} 个 chunk 到 ${remoteAddr}:${remotePort}, 等待传输完成确认...`);
   } catch (err) {
     errorLog(`发送文件失败: ${err}`);
   }

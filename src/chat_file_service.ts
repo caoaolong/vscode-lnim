@@ -251,14 +251,26 @@ export class ChatFileService {
 
   /**
    * 获取安全的相对路径，防止绝对路径导致的错误
+   * 支持跨平台路径处理（Windows 和 Unix）
    */
   private getSafeRelativePath(filePath: string): string {
-    const parsed = path.parse(filePath);
-    let relativePath = filePath;
-    if (parsed.root) {
-      relativePath = path.relative(parsed.root, filePath);
+    // 处理 Windows 路径（在任何平台上都能识别）
+    // 匹配类似 C:\path\to\file 或 D:\path\to\file 的格式
+    const winDriveMatch = filePath.match(/^[a-zA-Z]:\\/);
+    if (winDriveMatch) {
+      // 这是一个 Windows 绝对路径，移除盘符和根目录
+      const withoutDrive = filePath.substring(3); // 跳过 "C:\"
+      return withoutDrive.replace(/\\/g, '/'); // 统一使用正斜杠
     }
-    return relativePath;
+    
+    // 处理 Unix 绝对路径（以 / 开头）
+    if (filePath.startsWith('/')) {
+      // 移除开头的 /
+      return filePath.substring(1);
+    }
+    
+    // 已经是相对路径，直接返回（统一使用正斜杠）
+    return filePath.replace(/\\/g, '/');
   }
 
   /**
