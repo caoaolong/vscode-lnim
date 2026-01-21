@@ -35,7 +35,9 @@ interface FileTransferState {
 }
 
 export class ChatFileService {
-  private readonly chunkSize: number = 1024;
+  // 优化chunk大小以适应MTU限制，避免IP分片
+  // 与ChatMessageService保持一致
+  private readonly chunkSize: number = 256;
   private fds: Map<string, number> = new Map();
   // 存储文件下载进度
   private activeDownloads = new Map<string, {

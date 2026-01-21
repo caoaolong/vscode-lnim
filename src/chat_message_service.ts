@@ -64,7 +64,13 @@ export class ChatMessageService {
   }) => void;
   private readonly messageManager?: ChatMessageManager;
   private readonly fileService: ChatFileService;
-  private readonly chunkSize: number = 1024;
+  
+  // 优化chunk大小以适应MTU限制
+  // 考虑：以太网MTU 1500 - IP头20 - UDP头8 = 1472 bytes可用
+  // JSON元数据约270 bytes，Buffer在JSON中会膨胀
+  // 为避免IP分片，chunk数据应该较小
+  // 256 bytes数据 + 元数据 ≈ 800 bytes < 1472 bytes (安全)
+  private readonly chunkSize: number = 256;
   
   // 文件发送会话管理
   private fileSendSessions = new Map<string, {
@@ -409,7 +415,7 @@ export class ChatMessageService {
   }
   
   /**
-   * 异步发送chunks，每个chunk之间添加延迟避免UDP缓冲区溢出
+   * 异步发送chunks，批量发送避免UDP缓冲区溢出
    */
   private async sendChunksWithDelay(
     fd: number,
@@ -420,40 +426,51 @@ export class ChatMessageService {
     targetIp: string,
     targetPort: number
   ) {
-    for (const i of chunksToSend) {
-      if (i < 0 || i >= chunkCount) {
-        continue;
-      }
+    // chunk大小从1024降到256，为保持相同性能，批量大小增加到200
+    // 200个chunk × 256 bytes = 51.2 KB/批
+    const batchSize = 200;
+    
+    for (let batchStart = 0; batchStart < chunksToSend.length; batchStart += batchSize) {
+      const batchEnd = Math.min(batchStart + batchSize, chunksToSend.length);
       
-      const buffer = Buffer.alloc(this.chunkSize);
-      const nbytes = fs.readSync(fd, buffer, 0, this.chunkSize, i * this.chunkSize);
-      
-      if (this.getSelfId) {
-        this.sendMessage(
-          {
-            type: "chunk",
-            value: filePath,
-            from: this.getSelfId(),
-            timestamp: Date.now(),
-            sessionId: sessionId,
-            chunk: {
-              index: i,
-              size: nbytes,
-              data: buffer.subarray(0, nbytes),
-              total: chunkCount,
-            }
-          },
-          targetIp,
-          targetPort
-        );
+      // 批量发送当前批次的chunk
+      for (let idx = batchStart; idx < batchEnd; idx++) {
+        const i = chunksToSend[idx];
         
-        if (i % 10 === 0 || i === chunksToSend.length - 1) {
-          console.log(`[handleChunkMessage] 已发送chunk ${i}/${chunkCount - 1}`);
+        if (i < 0 || i >= chunkCount) {
+          continue;
         }
         
-        // 添加小延迟避免UDP缓冲区溢出（每发送1个chunk延迟1ms）
-        if (i < chunksToSend.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 1));
+        const buffer = Buffer.alloc(this.chunkSize);
+        const nbytes = fs.readSync(fd, buffer, 0, this.chunkSize, i * this.chunkSize);
+        
+        if (this.getSelfId) {
+          this.sendMessage(
+            {
+              type: "chunk",
+              value: filePath,
+              from: this.getSelfId(),
+              timestamp: Date.now(),
+              sessionId: sessionId,
+              chunk: {
+                index: i,
+                size: nbytes,
+                data: buffer.subarray(0, nbytes),
+                total: chunkCount,
+              }
+            },
+            targetIp,
+            targetPort
+          );
+        }
+      }
+      
+      // 每批次之间延迟，给接收方时间处理
+      if (batchEnd < chunksToSend.length) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+        
+        if (batchEnd % 2000 === 0 || batchEnd === chunksToSend.length) {
+          console.log(`[handleChunkMessage] 已发送chunk ${batchEnd}/${chunkCount}`);
         }
       }
     }

@@ -38,6 +38,8 @@ interface FileReceiveSession {
   sessionId: string;
   senderIp: string;
   senderPort: number;
+  startTime: number; // 开始时间
+  fileSize: number; // 文件大小
 }
 const fileReceiveSessions = new Map<string, FileReceiveSession>();
 
@@ -48,6 +50,7 @@ interface FileSendSession {
   chunkCount: number;
   targetIp: string;
   targetPort: number;
+  startTime: number; // 开始时间
 }
 const fileSendSessions = new Map<string, FileSendSession>();
 
@@ -213,7 +216,12 @@ function sendFileMessage(filePath: string, ip: string, port: number) {
   log(`[发送] type=chat(file), to=${ip}:${port}`);
 }
 
-const chunkSize: number = 1024;
+// 优化chunk大小以适应MTU限制
+// 考虑：以太网MTU 1500 - IP头20 - UDP头8 = 1472 bytes可用
+// JSON元数据约270 bytes，Buffer在JSON中会膨胀
+// 为避免IP分片，chunk数据应该较小
+// 256 bytes数据 + 元数据 ≈ 800 bytes < 1472 bytes (安全)
+const chunkSize: number = 256;
 
 async function handleChunkRequest(filePath: string, remoteAddr: string, remotePort: number, requestChunks?: number[], sessionId?: string) {
   try {
@@ -225,58 +233,79 @@ async function handleChunkRequest(filePath: string, remoteAddr: string, remotePo
     const sid = sessionId || `${remoteAddr}_${remotePort}_${filePath}_${Date.now()}`;
     
     let session = fileSendSessions.get(sid);
+    const startTime = Date.now();
+    
     if (!session) {
       session = {
         filePath,
         fd,
         chunkCount,
         targetIp: remoteAddr,
-        targetPort: remotePort
+        targetPort: remotePort,
+        startTime: startTime
       };
       fileSendSessions.set(sid, session);
-      log(`[文件发送] 创建会话 ${sid}, 共 ${chunkCount} 块`);
+      const fileName = extractFileName(filePath);
+      const fileSizeMB = (stat.size / (1024 * 1024)).toFixed(2);
+      log(`[文件发送] 📤 开始发送: ${fileName} (${fileSizeMB} MB, ${chunkCount} 块)`);
     }
 
     // 确定要发送的chunk列表
     const chunksToSend = requestChunks || Array.from({length: chunkCount}, (_, i) => i);
     
-    // 异步发送chunk，避免UDP缓冲区溢出
-    for (const i of chunksToSend) {
-      if (i < 0 || i >= chunkCount) {
-        continue;
+    // chunk大小从1024降到256，为保持相同性能，批量大小增加到200
+    // 200个chunk × 256 bytes = 51.2 KB/批
+    const batchSize = 200;
+    
+    // 批量发送chunk，避免UDP缓冲区溢出
+    for (let batchStart = 0; batchStart < chunksToSend.length; batchStart += batchSize) {
+      const batchEnd = Math.min(batchStart + batchSize, chunksToSend.length);
+      
+      // 批量发送当前批次的chunk
+      for (let idx = batchStart; idx < batchEnd; idx++) {
+        const i = chunksToSend[idx];
+        
+        if (i < 0 || i >= chunkCount) {
+          continue;
+        }
+        
+        const buffer = Buffer.alloc(chunkSize);
+        const nbytes = fs.readSync(fd, buffer, 0, chunkSize, i * chunkSize);
+        
+        sendMessage(
+          {
+            type: "chunk",
+            value: filePath,
+            from: getClientId(),
+            timestamp: Date.now(),
+            sessionId: sid,
+            chunk: {
+              index: i,
+              size: nbytes,
+              data: buffer.subarray(0, nbytes),
+              total: chunkCount,
+            }
+          },
+          remoteAddr,
+          remotePort
+        );
       }
       
-      const buffer = Buffer.alloc(chunkSize);
-      const nbytes = fs.readSync(fd, buffer, 0, chunkSize, i * chunkSize);
-      
-      sendMessage(
-        {
-          type: "chunk",
-          value: filePath,
-          from: getClientId(),
-          timestamp: Date.now(),
-          sessionId: sid,
-          chunk: {
-            index: i,
-            size: nbytes,
-            data: buffer.subarray(0, nbytes),
-            total: chunkCount,
-          }
-        },
-        remoteAddr,
-        remotePort
-      );
-      
-      // 添加小延迟避免UDP缓冲区溢出（每发送1个chunk延迟1ms）
-      if (i < chunksToSend.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 1));
+      // 每批次之间延迟，给接收方时间处理
+      if (batchEnd < chunksToSend.length) {
+        await new Promise(resolve => setTimeout(resolve, 10));
       }
     }
     
+    const sendTime = ((Date.now() - startTime) / 1000).toFixed(2);
+    
     if (!requestChunks) {
-      log(`[文件发送] 已发送 ${chunkCount} 个 chunk 到 ${remoteAddr}:${remotePort}`);
+      const fileName = extractFileName(filePath);
+      const fileSizeMB = (stat.size / (1024 * 1024)).toFixed(2);
+      const speedMBps = (stat.size / (1024 * 1024) / parseFloat(sendTime)).toFixed(2);
+      log(`[文件发送] ✅ 发送完成: ${fileName} (${fileSizeMB} MB, 耗时: ${sendTime}s, 速度: ${speedMBps} MB/s)`);
     } else {
-      log(`[文件发送] 已补发 ${requestChunks.length} 个 chunk`);
+      log(`[文件发送] 已补发 ${requestChunks.length} 个 chunk (耗时: ${sendTime}s)`);
     }
   } catch (err) {
     errorLog(`发送文件失败: ${err}`);
@@ -339,18 +368,23 @@ udpClient.on("message", (data, rinfo) => {
             const fileName = extractFileName(msg.value);
             const receivePath = `./received_${Date.now()}_${fileName}`;
             const fd = fs.openSync(receivePath, 'w');
+            const fileSize = msg.chunk.total * 256; // 估算文件大小
+            const fileSizeMB = (fileSize / (1024 * 1024)).toFixed(2);
+            
             session = {
               filePath: receivePath,
               fd,
               receivedChunks: new Set<number>(),
               totalChunks: msg.chunk.total,
-              chunkSize: 1024,
+              chunkSize: 256, // 与发送端保持一致
               sessionId: msg.sessionId || sessionKey,
               senderIp: rinfo.address,
-              senderPort: rinfo.port
+              senderPort: rinfo.port,
+              startTime: Date.now(),
+              fileSize: fileSize
             };
             fileReceiveSessions.set(sessionKey, session);
-            log(`[文件接收] 开始接收文件: ${msg.value}, 共 ${msg.chunk.total} 块, sessionId=${session.sessionId}`);
+            log(`[文件接收] 📥 开始接收: ${fileName} (~${fileSizeMB} MB, ${msg.chunk.total} 块)`);
           }
           
           if (session) {
@@ -363,13 +397,18 @@ udpClient.on("message", (data, rinfo) => {
             
             // 显示进度
             const progress = Math.floor((session.receivedChunks.size / session.totalChunks) * 100);
-            if (session.receivedChunks.size % 10 === 0 || session.receivedChunks.size === session.totalChunks) {
+            if (session.receivedChunks.size % 2000 === 0 || session.receivedChunks.size === session.totalChunks) {
               log(`[文件接收] 进度: ${progress}% (${session.receivedChunks.size}/${session.totalChunks})`);
             }
             
             // 检查是否已接收所有 chunk
             if (session.receivedChunks.size === session.totalChunks) {
-              log(`[文件接收] 文件接收完成: ${session.filePath}, 共 ${session.totalChunks} 块`);
+              const receiveTime = ((Date.now() - session.startTime) / 1000).toFixed(2);
+              const fileSizeMB = (session.fileSize / (1024 * 1024)).toFixed(2);
+              const speedMBps = (session.fileSize / (1024 * 1024) / parseFloat(receiveTime)).toFixed(2);
+              const fileName = extractFileName(session.filePath);
+              
+              log(`[文件接收] ✅ 接收完成: ${fileName} (${fileSizeMB} MB, 耗时: ${receiveTime}s, 速度: ${speedMBps} MB/s)`);
               
               // 发送接收完成确认
               sendMessage(
@@ -402,19 +441,21 @@ udpClient.on("message", (data, rinfo) => {
     
     // 处理文件接收完成确认
     if (msg.type === "file_received") {
-      log(`[接收] type=file_received, from=${rinfo.address}:${rinfo.port}, sessionId=${msg.sessionId}`);
-      
       // 清理发送会话
       const sessionId = msg.sessionId;
       const session = fileSendSessions.get(sessionId || "");
       if (session) {
+        const totalTime = ((Date.now() - session.startTime) / 1000).toFixed(2);
+        const fileName = extractFileName(session.filePath);
+        
         try {
           fs.closeSync(session.fd);
         } catch (error) {
           errorLog(`关闭文件句柄失败: ${error}`);
         }
+        
         fileSendSessions.delete(sessionId || "");
-        log(`[文件发送] 传输完成，会话已清理: ${extractFileName(session.filePath)}`);
+        log(`[文件发送] 🎉 对方确认接收完成: ${fileName} (总耗时: ${totalTime}s)`);
       }
       return;
     }
