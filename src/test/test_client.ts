@@ -1,528 +1,409 @@
-import * as dgram from "dgram";
-import * as fs from "fs";
+import * as net from "net";
 import * as readline from "readline";
-import { ChatMessage } from "../chat_message_service";
+import * as fs from "fs";
+import * as path from "path";
 
-const CLIENT_IP = "192.168.10.21";
-const CLIENT_PORT = 18081;
-const CLIENT_USERNAME = "TestClient";
-
-let remoteIp = "192.168.10.21";
-let remotePort = 18080;
-
-function getClientId(): string {
-  return Buffer.from(
-    `${CLIENT_USERNAME}-${CLIENT_IP}:${CLIENT_PORT}`,
-    "utf-8"
-  ).toString("base64");
+/**
+ * TCP消息类型定义
+ */
+interface TcpMessage {
+  type: "chat" | "link" | "file_meta" | "file_data" | "file_complete" | "heartbeat";
+  from: string;
+  timestamp: number;
+  value?: string;
+  isReply?: boolean;
+  fileName?: string;
+  fileSize?: number;
+  sessionId?: string;
+  data?: string;
+  offset?: number;
 }
 
 /**
- * 从跨平台路径中提取文件名
+ * TCP测试客户端
  */
-function extractFileName(filePath: string): string {
-  const normalizedPath = filePath.replace(/\\/g, '/');
-  const parts = normalizedPath.split('/');
-  return parts[parts.length - 1] || 'unknown_file';
-}
+class TcpTestClient {
+  private client?: net.Socket;
+  private readonly serverIp: string;
+  private readonly serverPort: number;
+  private readonly clientId: string;
+  private connected: boolean = false;
+  private rl: readline.Interface;
+  private receiveBuffer: Buffer = Buffer.alloc(0);
 
-const udpClient = dgram.createSocket("udp4");
+  constructor(serverIp: string = "127.0.0.1", serverPort: number = 18080) {
+    this.serverIp = serverIp;
+    this.serverPort = serverPort;
+    this.clientId = Buffer.from(`测试客户端-${serverIp}:${serverPort + 1}`).toString("base64");
 
-// 文件接收会话管理
-interface FileReceiveSession {
-  filePath: string;
-  receivedChunks: Set<number>;
-  totalChunks: number;
-  chunkSize: number;
-  sessionId: string;
-  senderIp: string;
-  senderPort: number;
-  startTime: number; // 开始时间
-  fileSize: number; // 文件大小
-  buffer: Buffer; // 内存缓冲区
-}
-const fileReceiveSessions = new Map<string, FileReceiveSession>();
-
-// 文件发送会话管理
-interface FileSendSession {
-  filePath: string;
-  fd: number;
-  chunkCount: number;
-  targetIp: string;
-  targetPort: number;
-  startTime: number; // 开始时间
-}
-const fileSendSessions = new Map<string, FileSendSession>();
-
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout,
-  prompt: "> ",
-});
-
-function log(msg: string) {
-  readline.clearLine(process.stdout, 0);
-  readline.cursorTo(process.stdout, 0);
-  console.log(msg);
-  updatePrompt();
-  rl.prompt(true);
-}
-
-function errorLog(msg: string) {
-  readline.clearLine(process.stdout, 0);
-  readline.cursorTo(process.stdout, 0);
-  console.error(msg);
-  updatePrompt();
-  rl.prompt(true);
-}
-
-function updatePrompt() {
-  rl.setPrompt(`[Target: ${remoteIp}:${remotePort}]> `);
-}
-
-function sendMessage(message: ChatMessage, ip: string, port: number) {
-  const buf = Buffer.from(JSON.stringify(message), "utf8");
-  udpClient.send(buf, port, ip, (err) => {
-    if (err) {
-      errorLog(`发送消息失败: ${err.message}`);
-    }
-  });
-}
-
-function printBanner() {
-  console.log("=".repeat(50));
-  console.log("UDP 测试客户端已启动 (简化版)");
-  console.log("=".repeat(50));
-  console.log(`本机地址: ${CLIENT_IP}`);
-  console.log(`本机端口: ${CLIENT_PORT}`);
-  console.log(`用户名: ${CLIENT_USERNAME}`);
-  console.log(`客户端 ID: ${getClientId()}`);
-  console.log("-".repeat(50));
-  console.log(`当前默认目标: ${remoteIp}:${remotePort}`);
-  console.log("指令说明：");
-  console.log("  直接输入内容 -> 发送 Chat 消息给默认目标");
-  console.log("  /link        -> 发送 link 探测消息给默认目标");
-  console.log("  /target <ip> <port> -> 修改默认目标地址");
-  console.log("  /send <ip> <port> <msg> -> 向指定地址发送一次性消息");
-  console.log("  /file <path> -> 向默认目标发送文件消息");
-  console.log("  /quit        -> 退出客户端");
-  console.log("=".repeat(50));
-  updatePrompt();
-  rl.prompt();
-}
-
-rl.on("line", (line) => {
-  const text = line.trim();
-  if (!text) {
-    rl.prompt();
-    return;
+    // 创建命令行交互界面
+    this.rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+      prompt: "LNIM-Test> ",
+    });
   }
 
-  if (text.startsWith("/")) {
-    const parts = text.split(/\s+/);
-    const cmd = parts[0].toLowerCase();
+  /**
+   * 启动客户端
+   */
+  public async start(): Promise<void> {
+    console.log("========================================");
+    console.log("     LNIM TCP测试客户端");
+    console.log("========================================");
+    console.log(`目标服务器: ${this.serverIp}:${this.serverPort}`);
+    console.log(`客户端ID: ${this.clientId}`);
+    console.log("========================================\n");
 
-    if (cmd === "/quit") {
-      shutdown();
-      return;
-    }
-
-    if (cmd === "/link") {
-      sendLink(remoteIp, remotePort);
-      rl.prompt();
-      return;
-    }
-
-    if (cmd === "/target") {
-      if (parts.length !== 3) {
-        errorLog("用法: /target <ip> <port>");
-      } else {
-        remoteIp = parts[1];
-        remotePort = parseInt(parts[2], 10);
-        log(`默认目标已更新为: ${remoteIp}:${remotePort}`);
-      }
-      return;
-    }
-
-    if (cmd === "/send") {
-      if (parts.length < 4) {
-        errorLog("用法: /send <ip> <port> <msg>");
-      } else {
-        const targetIp = parts[1];
-        const targetPort = parseInt(parts[2], 10);
-        const msg = parts.slice(3).join(" ");
-        sendChat(msg, targetIp, targetPort);
-      }
-      return;
-    }
-
-    if (cmd === "/file") {
-      if (parts.length < 2) {
-        errorLog("用法: /file <path>");
-      } else {
-        const filePath = parts.slice(1).join(" ");
-        sendFileMessage(filePath, remoteIp, remotePort);
-      }
-      return;
-    }
-
-    errorLog(`未知命令: ${cmd}`);
-    return;
+    await this.connect();
+    this.setupCommandLine();
   }
 
-  sendChat(text, remoteIp, remotePort);
-});
+  /**
+   * 连接到服务器
+   */
+  private async connect(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      console.log(`[连接] 正在连接到 ${this.serverIp}:${this.serverPort}...`);
 
-function sendLink(ip: string, port: number) {
-  sendMessage(
-    {
-      type: "link",
-      from: getClientId(),
-      timestamp: Date.now(),
-      isReply: false, // 主动发送的link消息
-    },
-    ip,
-    port
-  );
-  log(`[发送] type=link, to=${ip}:${port}`);
-}
+      this.client = net.connect(this.serverPort, this.serverIp, () => {
+        this.connected = true;
+        console.log(`[连接] ✅ 已连接到服务器 ${this.serverIp}:${this.serverPort}\n`);
+        this.showHelp();
+        resolve();
+      });
 
-function sendChat(message: string, ip: string, port: number) {
-  sendMessage(
-    {
-      type: "chat",
-      from: getClientId(),
-      timestamp: Date.now(),
-      value: message,
-    },
-    ip,
-    port
-  );
-  log(`[发送] type=chat, to=${ip}:${port}`);
-}
+      this.client.on("data", (data) => this.handleData(data));
+      this.client.on("end", () => this.handleDisconnect());
+      this.client.on("error", (err) => this.handleError(err));
 
-function sendFileMessage(filePath: string, ip: string, port: number) {
-  const message = `这是一个文件 {#${filePath}}`;
-  sendMessage(
-    {
-      type: "chat",
-      from: getClientId(),
-      timestamp: Date.now(),
-      value: message,
-    },
-    ip,
-    port
-  );
-  log(`[发送] type=chat(file), to=${ip}:${port}`);
-}
-
-// 优化chunk大小以适应MTU限制
-// 考虑：以太网MTU 1500 - IP头20 - UDP头8 = 1472 bytes可用
-// JSON元数据约270 bytes，Buffer在JSON中会膨胀
-// 为避免IP分片，chunk数据应该较小
-// 256 bytes数据 + 元数据 ≈ 800 bytes < 1472 bytes (安全)
-const chunkSize: number = 256;
-
-async function handleChunkRequest(filePath: string, remoteAddr: string, remotePort: number, requestChunks?: number[], sessionId?: string) {
-  try {
-    const stat = fs.statSync(filePath);
-    const chunkCount = Math.ceil(stat.size / chunkSize);
-    const fd = fs.openSync(filePath, "r");
-    
-    // 创建或查找发送会话
-    const sid = sessionId || `${remoteAddr}_${remotePort}_${filePath}_${Date.now()}`;
-    
-    let session = fileSendSessions.get(sid);
-    const startTime = Date.now();
-    
-    if (!session) {
-      session = {
-        filePath,
-        fd,
-        chunkCount,
-        targetIp: remoteAddr,
-        targetPort: remotePort,
-        startTime: startTime
-      };
-      fileSendSessions.set(sid, session);
-      const fileName = extractFileName(filePath);
-      const fileSizeMB = (stat.size / (1024 * 1024)).toFixed(2);
-      log(`[文件发送] 📤 开始发送: ${fileName} (${fileSizeMB} MB, ${chunkCount} 块)`);
-    }
-
-    // 确定要发送的chunk列表
-    const chunksToSend = requestChunks || Array.from({length: chunkCount}, (_, i) => i);
-    
-    // 降低批次大小，增加延迟时间，确保接收端有足够时间处理
-    // 100个chunk × 256 bytes = 25.6 KB/批
-    const batchSize = 100;
-    const batchDelay = 20; // 增加到20ms
-    
-    // 批量发送chunk，避免UDP缓冲区溢出
-    for (let batchStart = 0; batchStart < chunksToSend.length; batchStart += batchSize) {
-      const batchEnd = Math.min(batchStart + batchSize, chunksToSend.length);
-      
-      // 批量发送当前批次的chunk
-      for (let idx = batchStart; idx < batchEnd; idx++) {
-        const i = chunksToSend[idx];
-        
-        if (i < 0 || i >= chunkCount) {
-          continue;
+      // 连接超时
+      setTimeout(() => {
+        if (!this.connected) {
+          reject(new Error("连接超时"));
         }
-        
-        const buffer = Buffer.alloc(chunkSize);
-        const nbytes = fs.readSync(fd, buffer, 0, chunkSize, i * chunkSize);
-        
-        sendMessage(
-          {
-            type: "chunk",
-            value: filePath,
-            from: getClientId(),
-            timestamp: Date.now(),
-            sessionId: sid,
-            chunk: {
-              index: i,
-              size: nbytes,
-              data: buffer.subarray(0, nbytes),
-              total: chunkCount,
-            }
-          },
-          remoteAddr,
-          remotePort
-        );
-      }
-      
-      // 每批次之间延迟，给接收方时间处理
-      if (batchEnd < chunksToSend.length) {
-        await new Promise(resolve => setTimeout(resolve, batchDelay));
-        
-        if (batchEnd % 1000 === 0) {
-          log(`[文件发送] 进度: ${Math.floor((batchEnd / chunkCount) * 100)}% (${batchEnd}/${chunkCount})`);
-        }
-      }
-    }
-    
-    const sendTime = ((Date.now() - startTime) / 1000).toFixed(2);
-    
-    if (!requestChunks) {
-      const fileName = extractFileName(filePath);
-      const fileSizeMB = (stat.size / (1024 * 1024)).toFixed(2);
-      const speedMBps = (stat.size / (1024 * 1024) / parseFloat(sendTime)).toFixed(2);
-      log(`[文件发送] ✅ 发送完成: ${fileName} (${fileSizeMB} MB, 耗时: ${sendTime}s, 速度: ${speedMBps} MB/s)`);
-    } else {
-      log(`[文件发送] 已补发 ${requestChunks.length} 个 chunk (耗时: ${sendTime}s)`);
-    }
-  } catch (err) {
-    errorLog(`发送文件失败: ${err}`);
+      }, 5000);
+    });
   }
-}
 
-udpClient.on("message", (data, rinfo) => {
-  try {
-    const text = data.toString("utf8");
+  /**
+   * 处理接收到的数据
+   */
+  private handleData(chunk: Buffer): void {
+    this.receiveBuffer = Buffer.concat([this.receiveBuffer, chunk]);
 
-    let payload: any;
-    try {
-      payload = JSON.parse(text);
-    } catch {
-      log(
-        `[${new Date().toLocaleTimeString()}] 收到来自 ${rinfo.address}:${rinfo.port} 的非 JSON 消息: ${text}`
-      );
-      return;
-    }
+    // 尝试解析消息（以\n分隔）
+    let newlineIndex: number;
+    while ((newlineIndex = this.receiveBuffer.indexOf("\n")) !== -1) {
+      const messageData = this.receiveBuffer.slice(0, newlineIndex);
+      this.receiveBuffer = this.receiveBuffer.slice(newlineIndex + 1);
 
-    const msg = payload as ChatMessage;
-
-    if (msg.type === "link") {
-      log(`[接收] type=link, from=${rinfo.address}:${rinfo.port}, isReply=${msg.isReply || false}`);
-      
-      // 只在收到非回复的link消息时才回复（防止无限循环）
-      if (!msg.isReply) {
-        sendMessage(
-          {
-            type: "link",
-            from: getClientId(),
-            timestamp: Date.now(),
-            isReply: true, // 标记为回复消息
-          },
-          rinfo.address,
-          rinfo.port
-        );
-        log(`[自动回复] type=link, to=${rinfo.address}:${rinfo.port}, isReply=true`);
+      try {
+        const message = JSON.parse(messageData.toString("utf8")) as TcpMessage;
+        this.handleMessage(message);
+      } catch (error) {
+        console.error(`[错误] 解析消息失败:`, error);
       }
-      return;
     }
-
-    if (msg.type === "chat") {
-      log(`[接收] type=chat, from=${rinfo.address}:${rinfo.port}, message=${msg.value}`);
-      return;
-    }
-
-    if (msg.type === "chunk") {
-      // 如果有chunk数据，说明是接收chunk
-      if (msg.chunk && typeof msg.chunk.index === 'number') {
-        // 保存接收到的 chunk
-        if (msg.value) {
-          const sessionKey = msg.sessionId || `${rinfo.address}_${rinfo.port}_${msg.value}`;
-          let session = fileReceiveSessions.get(sessionKey);
-          
-          // 首次接收该文件的 chunk，创建会话
-          if (!session && msg.chunk.total) {
-            const fileName = extractFileName(msg.value);
-            const receivePath = `./received_${Date.now()}_${fileName}`;
-            const fileSize = msg.chunk.total * 256; // 估算文件大小
-            const fileSizeMB = (fileSize / (1024 * 1024)).toFixed(2);
-            
-            // 创建内存缓冲区
-            const fileBuffer = Buffer.alloc(fileSize);
-            
-            session = {
-              filePath: receivePath,
-              receivedChunks: new Set<number>(),
-              totalChunks: msg.chunk.total,
-              chunkSize: 256, // 与发送端保持一致
-              sessionId: msg.sessionId || sessionKey,
-              senderIp: rinfo.address,
-              senderPort: rinfo.port,
-              startTime: Date.now(),
-              fileSize: fileSize,
-              buffer: fileBuffer
-            };
-            fileReceiveSessions.set(sessionKey, session);
-            log(`[文件接收] 📥 开始接收: ${fileName} (~${fileSizeMB} MB, ${msg.chunk.total} 块)`);
-          }
-          
-          if (session) {
-            // 写入内存缓冲区
-            const chunkBuffer = Buffer.isBuffer(msg.chunk.data)
-              ? msg.chunk.data
-              : Buffer.from((msg.chunk.data as any).data);
-            chunkBuffer.copy(session.buffer, msg.chunk.index * session.chunkSize, 0, msg.chunk.size);
-            session.receivedChunks.add(msg.chunk.index);
-            
-            // 显示进度
-            const progress = Math.floor((session.receivedChunks.size / session.totalChunks) * 100);
-            if (session.receivedChunks.size % 2000 === 0 || session.receivedChunks.size === session.totalChunks) {
-              log(`[文件接收] 进度: ${progress}% (${session.receivedChunks.size}/${session.totalChunks})`);
-            }
-            
-            // 检查是否已接收所有 chunk
-            if (session.receivedChunks.size === session.totalChunks) {
-              // 写入文件
-              fs.writeFileSync(session.filePath, session.buffer);
-              
-              const receiveTime = ((Date.now() - session.startTime) / 1000).toFixed(2);
-              const fileSizeMB = (session.fileSize / (1024 * 1024)).toFixed(2);
-              const speedMBps = (session.fileSize / (1024 * 1024) / parseFloat(receiveTime)).toFixed(2);
-              const fileName = extractFileName(session.filePath);
-              
-              log(`[文件接收] ✅ 接收完成: ${fileName} (${fileSizeMB} MB, 耗时: ${receiveTime}s, 速度: ${speedMBps} MB/s)`);
-              
-              // 发送接收完成确认
-              sendMessage(
-                {
-                  type: "file_received",
-                  from: getClientId(),
-                  timestamp: Date.now(),
-                  sessionId: session.sessionId,
-                  value: msg.value
-                },
-                rinfo.address,
-                rinfo.port
-              );
-              
-              fileReceiveSessions.delete(sessionKey);
-            }
-          }
-        }
-      } else {
-        // 否则是chunk请求（文件下载请求）
-        log(`[接收] type=chunk, from=${rinfo.address}:${rinfo.port}, type=request`);
-        const filePath = typeof msg.value === "string" ? msg.value : "";
-        if (filePath) {
-          handleChunkRequest(filePath, rinfo.address, rinfo.port, msg.requestChunks, msg.sessionId);
-        }
-      }
-      return;
-    }
-    
-    // 处理文件接收完成确认
-    if (msg.type === "file_received") {
-      // 清理发送会话
-      const sessionId = msg.sessionId;
-      const session = fileSendSessions.get(sessionId || "");
-      if (session) {
-        const totalTime = ((Date.now() - session.startTime) / 1000).toFixed(2);
-        const fileName = extractFileName(session.filePath);
-        
-        try {
-          fs.closeSync(session.fd);
-        } catch (error) {
-          errorLog(`关闭文件句柄失败: ${error}`);
-        }
-        
-        fileSendSessions.delete(sessionId || "");
-        log(`[文件发送] 🎉 对方确认接收完成: ${fileName} (总耗时: ${totalTime}s)`);
-      }
-      return;
-    }
-    
-    // 其他未知类型消息
-    log(`[接收] type=${msg.type || "unknown"}, from=${rinfo.address}:${rinfo.port}`);
-  } catch (e) {
-    errorLog(`处理消息时出错: ${e}`);
   }
-});
 
-udpClient.on("error", (err) => {
-  errorLog(`UDP 客户端错误: ${err.message}`);
-});
+  /**
+   * 处理接收到的消息
+   */
+  private handleMessage(msg: TcpMessage): void {
+    const timestamp = new Date(msg.timestamp).toLocaleTimeString();
 
-function shutdown() {
-  console.log("\n正在关闭 UDP 客户端...");
-  
-  // 关闭所有文件接收会话（内存缓冲区会自动释放）
-  fileReceiveSessions.clear();
-  
-  // 关闭所有文件发送句柄
-  for (const [, session] of fileSendSessions.entries()) {
-    try {
-      fs.closeSync(session.fd);
-    } catch {}
+    switch (msg.type) {
+      case "link":
+        console.log(`\n[${timestamp}] 📡 收到Link消息 - isReply: ${msg.isReply}, from: ${msg.from}`);
+        break;
+
+      case "chat":
+        console.log(`\n[${timestamp}] 💬 收到聊天消息: ${msg.value}`);
+        break;
+
+      case "heartbeat":
+        // 静默处理心跳
+        // console.log(`[${timestamp}] ❤️ 收到心跳`);
+        break;
+
+      case "file_meta":
+        console.log(`\n[${timestamp}] 📁 收到文件元数据 - 文件: ${msg.fileName}, 大小: ${msg.fileSize} bytes`);
+        break;
+
+      case "file_data":
+        console.log(`\n[${timestamp}] 📦 收到文件数据 - offset: ${msg.offset}`);
+        break;
+
+      case "file_complete":
+        console.log(`\n[${timestamp}] ✅ 文件传输完成 - sessionId: ${msg.sessionId}`);
+        break;
+
+      default:
+        console.log(`\n[${timestamp}] ❓ 收到未知消息类型: ${msg.type}`);
+    }
+
+    // 重新显示提示符
+    this.rl.prompt();
   }
-  
-  rl.close();
-  udpClient.close(() => {
-    console.log("UDP 客户端已关闭");
+
+  /**
+   * 处理断开连接
+   */
+  private handleDisconnect(): void {
+    this.connected = false;
+    console.log("\n[连接] ❌ 与服务器断开连接");
+    this.rl.close();
     process.exit(0);
-  });
+  }
+
+  /**
+   * 处理错误
+   */
+  private handleError(err: Error): void {
+    console.error(`\n[错误] TCP连接错误: ${err.message}`);
+    
+    if (!this.connected) {
+      console.error("[错误] 无法连接到服务器，请检查：");
+      console.error("  1. 服务器是否已启动");
+      console.error("  2. IP和端口是否正确");
+      console.error("  3. 防火墙是否阻止了连接");
+      this.rl.close();
+      process.exit(1);
+    }
+  }
+
+  /**
+   * 发送消息
+   */
+  private sendMessage(msg: TcpMessage): void {
+    if (!this.connected || !this.client) {
+      console.error("[错误] 未连接到服务器");
+      return;
+    }
+
+    try {
+      const data = JSON.stringify(msg) + "\n";
+      this.client.write(data);
+    } catch (error) {
+      console.error(`[错误] 发送消息失败:`, error);
+    }
+  }
+
+  /**
+   * 发送Link消息
+   */
+  private sendLink(): void {
+    const msg: TcpMessage = {
+      type: "link",
+      from: this.clientId,
+      timestamp: Date.now(),
+      isReply: false,
+    };
+
+    this.sendMessage(msg);
+    console.log("[发送] 📡 已发送Link消息");
+  }
+
+  /**
+   * 发送聊天消息
+   */
+  private sendChat(message: string): void {
+    const msg: TcpMessage = {
+      type: "chat",
+      from: this.clientId,
+      timestamp: Date.now(),
+      value: message,
+    };
+
+    this.sendMessage(msg);
+    console.log(`[发送] 💬 已发送聊天消息: ${message}`);
+  }
+
+  /**
+   * 发送文件
+   */
+  private async sendFile(filePath: string): Promise<void> {
+    if (!fs.existsSync(filePath)) {
+      console.error(`[错误] 文件不存在: ${filePath}`);
+      return;
+    }
+
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile()) {
+      console.error(`[错误] 不是文件: ${filePath}`);
+      return;
+    }
+
+    const fileName = path.basename(filePath);
+    const fileSize = stat.size;
+    const sessionId = `${this.clientId}_${Date.now()}`;
+
+    console.log(`[文件] 📤 准备发送文件: ${fileName} (${fileSize} bytes)`);
+
+    // 1. 发送文件元数据
+    const metaMsg: TcpMessage = {
+      type: "file_meta",
+      from: this.clientId,
+      timestamp: Date.now(),
+      fileName: filePath,
+      fileSize,
+      sessionId,
+    };
+    this.sendMessage(metaMsg);
+
+    // 2. 读取并发送文件数据
+    const fd = fs.openSync(filePath, "r");
+    const chunkSize = 64 * 1024; // 64KB per chunk
+    let offset = 0;
+
+    try {
+      while (offset < fileSize) {
+        const buffer = Buffer.alloc(chunkSize);
+        const bytesRead = fs.readSync(fd, buffer, 0, chunkSize, offset);
+
+        const dataMsg: TcpMessage = {
+          type: "file_data",
+          from: this.clientId,
+          timestamp: Date.now(),
+          sessionId,
+          data: buffer.subarray(0, bytesRead).toString("base64"),
+          offset,
+        };
+
+        this.sendMessage(dataMsg);
+
+        offset += bytesRead;
+        const progress = ((offset / fileSize) * 100).toFixed(2);
+        process.stdout.write(`\r[文件] 发送进度: ${progress}%`);
+
+        // 小延迟，避免发送过快
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      console.log(); // 换行
+
+      // 3. 发送完成消息
+      const completeMsg: TcpMessage = {
+        type: "file_complete",
+        from: this.clientId,
+        timestamp: Date.now(),
+        sessionId,
+      };
+      this.sendMessage(completeMsg);
+
+      fs.closeSync(fd);
+      console.log(`[文件] ✅ 文件发送完成: ${fileName}`);
+    } catch (error) {
+      fs.closeSync(fd);
+      console.error(`[错误] 文件发送失败:`, error);
+    }
+  }
+
+  /**
+   * 显示帮助信息
+   */
+  private showHelp(): void {
+    console.log("可用命令:");
+    console.log("  /link              - 发送Link消息（用于检测在线状态）");
+    console.log("  /chat <消息>       - 发送聊天消息");
+    console.log("  /file <文件路径>   - 发送文件");
+    console.log("  /help              - 显示帮助信息");
+    console.log("  /quit, /exit       - 退出程序");
+    console.log("  直接输入文本       - 发送聊天消息\n");
+  }
+
+  /**
+   * 设置命令行交互
+   */
+  private setupCommandLine(): void {
+    this.rl.prompt();
+
+    this.rl.on("line", async (line) => {
+      const input = line.trim();
+
+      if (!input) {
+        this.rl.prompt();
+        return;
+      }
+
+      // 处理命令
+      if (input.startsWith("/")) {
+        const parts = input.split(" ");
+        const command = parts[0].toLowerCase();
+        const args = parts.slice(1);
+
+        switch (command) {
+          case "/link":
+            this.sendLink();
+            break;
+
+          case "/chat":
+            if (args.length === 0) {
+              console.log("[错误] 用法: /chat <消息>");
+            } else {
+              this.sendChat(args.join(" "));
+            }
+            break;
+
+          case "/file":
+            if (args.length === 0) {
+              console.log("[错误] 用法: /file <文件路径>");
+            } else {
+              await this.sendFile(args[0]);
+            }
+            break;
+
+          case "/help":
+            this.showHelp();
+            break;
+
+          case "/quit":
+          case "/exit":
+            console.log("[退出] 正在断开连接...");
+            if (this.client) {
+              this.client.end();
+            }
+            this.rl.close();
+            process.exit(0);
+            break;
+
+          default:
+            console.log(`[错误] 未知命令: ${command}`);
+            console.log("输入 /help 查看可用命令");
+        }
+      } else {
+        // 直接发送聊天消息
+        this.sendChat(input);
+      }
+
+      this.rl.prompt();
+    });
+
+    this.rl.on("close", () => {
+      console.log("\n[退出] 再见！");
+      process.exit(0);
+    });
+  }
 }
 
-udpClient.bind(CLIENT_PORT, CLIENT_IP, () => {
-  // 增大UDP接收缓冲区，避免高速传输时丢包
+// 主函数
+async function main() {
+  // 从命令行参数获取服务器地址
+  const args = process.argv.slice(2);
+  const serverIp = args[0] || "127.0.0.1";
+  const serverPort = args[1] ? parseInt(args[1]) : 18080;
+
+  const client = new TcpTestClient(serverIp, serverPort);
+
   try {
-    // 设置接收缓冲区为16MB（增大以应对大文件传输）
-    const bufferSize = 16 * 1024 * 1024;
-    udpClient.setRecvBufferSize(bufferSize);
-    const actualSize = udpClient.getRecvBufferSize();
-    const bufferSizeMB = (bufferSize / (1024 * 1024)).toFixed(2);
-    const actualSizeMB = (actualSize / (1024 * 1024)).toFixed(2);
-    log(`[UDP] 接收缓冲区请求大小: ${bufferSizeMB} MB, 实际大小: ${actualSizeMB} MB`);
-    
-    if (actualSize < bufferSize) {
-      log(`[UDP] 警告：实际缓冲区大小小于请求大小，可能需要调整系统参数`);
-    }
+    await client.start();
   } catch (error) {
-    errorLog(`[UDP] 无法设置接收缓冲区大小: ${error}`);
+    console.error(`[错误] 启动失败:`, error);
+    process.exit(1);
   }
-  
-  printBanner();
-});
+}
 
-process.on("SIGINT", () => {
-  shutdown();
-});
+// 运行
+main();
 
-process.on("SIGTERM", () => {
-  shutdown();
-});

@@ -1,4 +1,4 @@
-import * as dgram from "dgram";
+import * as net from "net";
 import * as vscode from "vscode";
 import * as fs from "fs";
 import { ChatMessageManager, ChatContact } from "./chat_message_manager";
@@ -51,27 +51,22 @@ export interface ChatMessageServiceOptions {
 }
 
 export class ChatMessageService {
-  private udpServer?: dgram.Socket;
+  private tcpServer?: net.Server;
+  private connections: Map<string, net.Socket> = new Map();
   private currentPort: number;
   private readonly defaultPort: number;
   private view?: vscode.WebviewView;
   private readonly getSelfId?: () => string;
-  private readonly onLinkMessageReceived?: (result: {
-    ip: string;
-    port: number;
-    id?: string;
-    isReply: boolean;
-  }) => void;
   private readonly messageManager?: ChatMessageManager;
   private readonly fileService: ChatFileService;
-  
+
   // 优化chunk大小以适应MTU限制
   // 考虑：以太网MTU 1500 - IP头20 - UDP头8 = 1472 bytes可用
   // JSON元数据约270 bytes，Buffer在JSON中会膨胀
   // 为避免IP分片，chunk数据应该较小
   // 256 bytes数据 + 元数据 ≈ 800 bytes < 1472 bytes (安全)
   private readonly chunkSize: number = 256;
-  
+
   // 文件发送会话管理
   private fileSendSessions = new Map<string, {
     filePath: string;
@@ -85,14 +80,12 @@ export class ChatMessageService {
     this.currentPort = port || options.defaultPort;
     this.defaultPort = options.defaultPort;
     this.view = options.view;
-    this.getSelfId = options.getSelfId;
-    this.onLinkMessageReceived = options.onLinkMessageReceived;
     this.fileService = options.fileService;
     this.fileService.setMessageService(this);
     this.messageManager = new ChatMessageManager(
       options.context.globalStorageUri.fsPath,
     );
-    this.startUdpServer(this.currentPort);
+    this.startTcpServer(this.currentPort);
   }
 
   public dispose(): void {
@@ -105,13 +98,13 @@ export class ChatMessageService {
       }
     }
     this.fileSendSessions.clear();
-    
+
     if (this.fileService) {
       this.fileService.dispose();
     }
-    
-    if (this.udpServer) {
-      this.udpServer.close();
+
+    if (this.tcpServer) {
+      this.tcpServer.close();
     }
   }
 
@@ -124,30 +117,27 @@ export class ChatMessageService {
   }
 
   public restart(port: number) {
-    if (this.udpServer) {
+    if (this.tcpServer) {
       try {
-        this.udpServer.close();
+        this.tcpServer.close();
       } catch { }
-      this.udpServer = undefined;
+      this.tcpServer = undefined;
     }
     this.currentPort = port || this.defaultPort;
-    this.startUdpServer(this.currentPort);
+    this.startTcpServer(this.currentPort);
   }
 
   /**
    * 发送消息（不需要确认）
    */
   private sendMessage(message: ChatMessage, ip: string, port: number): void {
-    if (!this.udpServer) {
+    if (!this.tcpServer) {
       return;
     }
-    
-    const buf = Buffer.from(JSON.stringify(message), "utf8");
-    this.udpServer.send(buf, port, ip, (err) => {
-      if (err) {
-        console.error(`发送消息到 ${ip}:${port} 失败:`, err);
-      }
-    });
+    const id = Buffer.from(`${ip}:${port}`).toString("base64");
+    if (this.connections.has(id)) {
+      this.connections.get(id)?.write(JSON.stringify(message));
+    }
   }
 
   /**
@@ -158,9 +148,9 @@ export class ChatMessageService {
       console.error(`[sendFileRequest] getSelfId为空`);
       return;
     }
-    
+
     console.log(`[sendFileRequest] 发送文件请求 - path: ${file.path}, ip: ${file.ip}, port: ${file.port}, requestChunks: ${requestChunks ? requestChunks.length : 'all'}`);
-    
+
     this.sendMessage(
       {
         type: "chunk",
@@ -172,7 +162,7 @@ export class ChatMessageService {
       file.ip,
       file.port
     );
-    
+
     console.log(`[sendFileRequest] 文件请求已发送`);
   }
 
@@ -182,7 +172,7 @@ export class ChatMessageService {
     }
     const selfId = this.getSelfId();
     const timestamp = message.timestamp || Date.now();
-    
+
     for (const c of message.target || []) {
       const parts = c.split(":");
       const ip = parts[0] || "";
@@ -238,9 +228,9 @@ export class ChatMessageService {
       contact.port && contact.port > 0 && contact.port <= 65535
         ? contact.port
         : this.defaultPort;
-    
+
     const fromId = this.getSelfId ? this.getSelfId() : "";
-    
+
     this.sendMessage(
       {
         type: "link",
@@ -252,7 +242,7 @@ export class ChatMessageService {
       targetPort
     );
   }
-  
+
   /**
    * 发送文件接收完成确认
    */
@@ -261,9 +251,9 @@ export class ChatMessageService {
       console.error(`[sendFileReceivedConfirm] getSelfId为空`);
       return;
     }
-    
+
     console.log(`[sendFileReceivedConfirm] 发送文件接收完成确认 - sessionId: ${sessionId}, to: ${ip}:${port}`);
-    
+
     this.sendMessage(
       {
         type: "file_received",
@@ -275,166 +265,123 @@ export class ChatMessageService {
       ip,
       port
     );
-    
+
     console.log(`[sendFileReceivedConfirm] 确认消息已发送`);
   }
 
-  private startUdpServer(port: number) {
-    try {
-      const targetPort = port || this.defaultPort;
-      this.udpServer = dgram.createSocket("udp4");
-      
-      // 增大UDP接收缓冲区，避免高速传输时丢包
-      // 从配置中读取缓冲区大小，默认16MB（增大以应对大文件传输）
-      const config = vscode.workspace.getConfiguration('lnim');
-      const bufferSize = config.get<number>('udpRecvBufferSize', 16 * 1024 * 1024);
-      
-      try {
-        this.udpServer.setRecvBufferSize(bufferSize);
-        const actualSize = this.udpServer.getRecvBufferSize();
-        const bufferSizeMB = (bufferSize / (1024 * 1024)).toFixed(2);
-        const actualSizeMB = (actualSize / (1024 * 1024)).toFixed(2);
-        console.log(`[UDP] 接收缓冲区请求大小: ${bufferSizeMB} MB, 实际大小: ${actualSizeMB} MB`);
-        
-        if (actualSize < bufferSize) {
-          console.warn(`[UDP] 警告：实际缓冲区大小(${actualSizeMB} MB)小于请求大小(${bufferSizeMB} MB)`);
-          console.warn(`[UDP] 可能需要调整系统参数。macOS: sudo sysctl -w net.inet.udp.recvspace=${bufferSize}`);
-        }
-      } catch (error) {
-        console.warn('[UDP] 无法设置接收缓冲区大小:', error);
-        console.warn('[UDP] 将使用系统默认缓冲区大小，大文件传输可能不稳定');
-      }
-      
-      this.udpServer.on("message", (data, rinfo) => {
-        try {
-          const text = data.toString();
-          const trimmed = text.trim();
-          if (
-            !trimmed.startsWith("{") &&
-            !trimmed.startsWith("[") &&
-            !trimmed.startsWith('"')
-          ) {
-            return;
-          }
+  private startTcpServer(port: number) {
+    this.tcpServer = net.createServer(this.handleMessage);
+    this.tcpServer.listen(port, "0.0.0.0", () => {
+      console.log(`TCP Server started, port: ${port}`);
+    });
+  }
 
-          let payload: any;
-          try {
-            payload = JSON.parse(text);
-          } catch (err) {
-            if (err instanceof SyntaxError) {
-              return;
-            }
-            throw err;
-          }
+  private handleMessage(socket: net.Socket) {
+    // 接收到消息
+    socket.on("data", this.handleDataMessage);
+    // 接收到离线消息
+    socket.on("end", this.handleOfflineMessage);
+    // 接收到错误消息
+    socket.on("error", (err) => {
+      vscode.window.showErrorMessage(`[LNIM]: TCP Server error: ${err.message}`);
+    })
+  }
 
-          if (payload && payload.type === "link") {
-            this.handleLinkMessage(payload, rinfo);
-            return;
-          } else if (payload && payload.type === "chat") {
-            this.handleChatMessage(payload, rinfo);
-            return;
-          } else if (payload && payload.type === "chunk") {
-            this.handleChunkMessage(payload, rinfo);
-            return;
-          } else if (payload && payload.type === "file_received") {
-            this.handleFileReceived(payload, rinfo);
-            return;
-          }
-        } catch (e) {
-          console.error("Failed to handle incoming UDP message:", e);
-        }
-      });
-      this.udpServer.on("error", (err) => {
-        console.error("UDP server error:", err);
-        vscode.window.showErrorMessage(`UDP 服务异常：${String(err)}`);
-      });
-      this.udpServer.bind(targetPort, () => {
-        this.currentPort = targetPort;
-      });
-    } catch (e) {
-      console.error("Failed to start UDP server:", e);
-      vscode.window.showErrorMessage("无法启动 UDP 服务");
+  private handleDataMessage(data: Buffer) {
+    const msg = JSON.parse(data.toString("utf8")) as ChatMessage;
+    if (msg.type === "chunk") {
+      this.handleChunkMessage(msg);
+    } else if (msg.type === "file_received") {
+      this.handleFileReceived(msg);
+    } else if (msg.type === "link") {
+      this.handleLinkMessage(msg);
+    } else if (msg.type === "chat") {
+      this.handleChatMessage(msg);
     }
+  }
+
+  private handleOfflineMessage() {
+
   }
 
   /**
    * 处理chunk消息
    */
-  private async handleChunkMessage(payload: any, rinfo: dgram.RemoteInfo) {
-    const data = payload as ChatMessage;
-    
-    // 如果有chunk数据，说明是发送chunk
-    if (data.chunk && typeof data.chunk.index === 'number') {
-      console.log(`[handleChunkMessage] 收到chunk - index: ${data.chunk.index}, size: ${data.chunk.size}, total: ${data.chunk.total}, sessionId: ${data.sessionId}`);
-      this.fileService.saveChunk(data.value, data.chunk, rinfo.address, rinfo.port, data.sessionId);
-      return;
-    }
-    
-    // 否则是请求chunk（文件下载请求）
-    const filePath = typeof data.value === "string" ? data.value : "";
-    const requestChunks = data.requestChunks;
-    
-    console.log(`[handleChunkMessage] 收到chunk请求 - filePath: ${filePath}, requestChunks: ${requestChunks ? requestChunks.length : 'all'}`);
-    
-    if (!filePath) {
-      console.error("收到chunk请求，但文件路径为空");
-      return;
-    }
+  private async handleChunkMessage(payload: ChatMessage) {
+    // const data = payload as ChatMessage;
 
-    if (!fs.existsSync(filePath)) {
-      console.error(`收到chunk请求，但文件不存在: ${filePath}`);
-      return;
-    }
+    // // 如果有chunk数据，说明是发送chunk
+    // if (data.chunk && typeof data.chunk.index === 'number') {
+    //   console.log(`[handleChunkMessage] 收到chunk - index: ${data.chunk.index}, size: ${data.chunk.size}, total: ${data.chunk.total}, sessionId: ${data.sessionId}`);
+    //   this.fileService.saveChunk(data.value, data.chunk, rinfo.address, rinfo.port, data.sessionId);
+    //   return;
+    // }
 
-    try {
-      const stat = fs.statSync(filePath);
-      
-      if (!stat.isFile()) {
-        console.error(`路径不是文件: ${filePath}`);
-        return;
-      }
+    // // 否则是请求chunk（文件下载请求）
+    // const filePath = typeof data.value === "string" ? data.value : "";
+    // const requestChunks = data.requestChunks;
 
-      const chunkCount = Math.ceil(stat.size / this.chunkSize);
-      const fd = fs.openSync(filePath, "r");
-      
-      // 创建或查找发送会话
-      const sessionId = data.sessionId || `${rinfo.address}_${rinfo.port}_${filePath}_${Date.now()}`;
-      
-      console.log(`[handleChunkMessage] 准备发送文件 - sessionId: ${sessionId}, chunkCount: ${chunkCount}, fileSize: ${stat.size}`);
-      
-      let session = this.fileSendSessions.get(sessionId);
-      if (!session) {
-        session = {
-          filePath,
-          fd,
-          chunkCount,
-          targetIp: rinfo.address,
-          targetPort: rinfo.port,
-        };
-        this.fileSendSessions.set(sessionId, session);
-        console.log(`[handleChunkMessage] 创建新的发送会话: ${sessionId}`);
-      } else {
-        console.log(`[handleChunkMessage] 使用现有发送会话: ${sessionId}`);
-      }
+    // console.log(`[handleChunkMessage] 收到chunk请求 - filePath: ${filePath}, requestChunks: ${requestChunks ? requestChunks.length : 'all'}`);
 
-      // 确定要发送的chunk列表
-      const chunksToSend = requestChunks || Array.from({length: chunkCount}, (_, i) => i);
-      
-      console.log(`[handleChunkMessage] 将发送 ${chunksToSend.length} 个chunk`);
-      
-      // 异步发送chunk，避免UDP缓冲区溢出
-      this.sendChunksWithDelay(fd, filePath, sessionId, chunksToSend, chunkCount, rinfo.address, rinfo.port);
-      
-      if (!requestChunks) {
-        vscode.window.showInformationMessage(
-          `正在向 ${rinfo.address}:${rinfo.port} 发送文件: ${filePath.split('/').pop()} (${chunkCount} 块)`
-        );
-      }
-    } catch (error) {
-      console.error("处理chunk请求时出错:", error);
-    }
+    // if (!filePath) {
+    //   console.error("收到chunk请求，但文件路径为空");
+    //   return;
+    // }
+
+    // if (!fs.existsSync(filePath)) {
+    //   console.error(`收到chunk请求，但文件不存在: ${filePath}`);
+    //   return;
+    // }
+
+    // try {
+    //   const stat = fs.statSync(filePath);
+
+    //   if (!stat.isFile()) {
+    //     console.error(`路径不是文件: ${filePath}`);
+    //     return;
+    //   }
+
+    //   const chunkCount = Math.ceil(stat.size / this.chunkSize);
+    //   const fd = fs.openSync(filePath, "r");
+
+    //   // 创建或查找发送会话
+    //   const sessionId = data.sessionId || `${rinfo.address}_${rinfo.port}_${filePath}_${Date.now()}`;
+
+    //   console.log(`[handleChunkMessage] 准备发送文件 - sessionId: ${sessionId}, chunkCount: ${chunkCount}, fileSize: ${stat.size}`);
+
+    //   let session = this.fileSendSessions.get(sessionId);
+    //   if (!session) {
+    //     session = {
+    //       filePath,
+    //       fd,
+    //       chunkCount,
+    //       targetIp: rinfo.address,
+    //       targetPort: rinfo.port,
+    //     };
+    //     this.fileSendSessions.set(sessionId, session);
+    //     console.log(`[handleChunkMessage] 创建新的发送会话: ${sessionId}`);
+    //   } else {
+    //     console.log(`[handleChunkMessage] 使用现有发送会话: ${sessionId}`);
+    //   }
+
+    //   // 确定要发送的chunk列表
+    //   const chunksToSend = requestChunks || Array.from({ length: chunkCount }, (_, i) => i);
+
+    //   console.log(`[handleChunkMessage] 将发送 ${chunksToSend.length} 个chunk`);
+
+    //   // 异步发送chunk，避免UDP缓冲区溢出
+    //   this.sendChunksWithDelay(fd, filePath, sessionId, chunksToSend, chunkCount, rinfo.address, rinfo.port);
+
+    //   if (!requestChunks) {
+    //     vscode.window.showInformationMessage(
+    //       `正在向 ${rinfo.address}:${rinfo.port} 发送文件: ${filePath.split('/').pop()} (${chunkCount} 块)`
+    //     );
+    //   }
+    // } catch (error) {
+    //   console.error("处理chunk请求时出错:", error);
+    // }
   }
-  
+
   /**
    * 异步发送chunks，批量发送避免UDP缓冲区溢出
    */
@@ -451,21 +398,21 @@ export class ChatMessageService {
     // 100个chunk × 256 bytes = 25.6 KB/批
     const batchSize = 100;
     const batchDelay = 20; // 增加到20ms
-    
+
     for (let batchStart = 0; batchStart < chunksToSend.length; batchStart += batchSize) {
       const batchEnd = Math.min(batchStart + batchSize, chunksToSend.length);
-      
+
       // 批量发送当前批次的chunk
       for (let idx = batchStart; idx < batchEnd; idx++) {
         const i = chunksToSend[idx];
-        
+
         if (i < 0 || i >= chunkCount) {
           continue;
         }
-        
+
         const buffer = Buffer.alloc(this.chunkSize);
         const nbytes = fs.readSync(fd, buffer, 0, this.chunkSize, i * this.chunkSize);
-        
+
         if (this.getSelfId) {
           this.sendMessage(
             {
@@ -486,118 +433,118 @@ export class ChatMessageService {
           );
         }
       }
-      
+
       // 每批次之间延迟，给接收方时间处理
       if (batchEnd < chunksToSend.length) {
         await new Promise(resolve => setTimeout(resolve, batchDelay));
-        
+
         if (batchEnd % 1000 === 0 || batchEnd === chunksToSend.length) {
           console.log(`[sendChunksWithDelay] 已发送chunk ${batchEnd}/${chunkCount}`);
         }
       }
     }
-    
+
     console.log(`[sendChunksWithDelay] 完成发送所有chunk`);
   }
-  
+
   /**
    * 处理文件接收完成确认
    */
-  private handleFileReceived(payload: any, rinfo: dgram.RemoteInfo) {
-    const msg = payload as ChatMessage;
-    
-    console.log(`[handleFileReceived] 收到文件接收完成确认 - sessionId: ${msg.sessionId}, from: ${rinfo.address}:${rinfo.port}`);
-    
-    if (!msg.sessionId) {
-      console.error(`[handleFileReceived] sessionId为空`);
-      return;
-    }
-    
-    // 清理发送会话
-    const session = this.fileSendSessions.get(msg.sessionId);
-    if (session) {
-      console.log(`[handleFileReceived] 找到发送会话，准备清理 - sessionId: ${msg.sessionId}, filePath: ${session.filePath}`);
-      try {
-        fs.closeSync(session.fd);
-        console.log(`[handleFileReceived] 文件句柄已关闭`);
-      } catch (error) {
-        console.error('[handleFileReceived] 关闭文件句柄失败:', error);
-      }
-      
-      this.fileSendSessions.delete(msg.sessionId);
-      console.log(`[handleFileReceived] 发送会话已删除，剩余会话数: ${this.fileSendSessions.size}`);
-      vscode.window.showInformationMessage(
-        `文件发送完成: ${session.filePath.split('/').pop()}`
-      );
-    } else {
-      console.warn(`[handleFileReceived] 未找到发送会话: ${msg.sessionId}`);
-    }
+  private handleFileReceived(payload: ChatMessage) {
+    // const msg = payload as ChatMessage;
+
+    // console.log(`[handleFileReceived] 收到文件接收完成确认 - sessionId: ${msg.sessionId}, from: ${rinfo.address}:${rinfo.port}`);
+
+    // if (!msg.sessionId) {
+    //   console.error(`[handleFileReceived] sessionId为空`);
+    //   return;
+    // }
+
+    // // 清理发送会话
+    // const session = this.fileSendSessions.get(msg.sessionId);
+    // if (session) {
+    //   console.log(`[handleFileReceived] 找到发送会话，准备清理 - sessionId: ${msg.sessionId}, filePath: ${session.filePath}`);
+    //   try {
+    //     fs.closeSync(session.fd);
+    //     console.log(`[handleFileReceived] 文件句柄已关闭`);
+    //   } catch (error) {
+    //     console.error('[handleFileReceived] 关闭文件句柄失败:', error);
+    //   }
+
+    //   this.fileSendSessions.delete(msg.sessionId);
+    //   console.log(`[handleFileReceived] 发送会话已删除，剩余会话数: ${this.fileSendSessions.size}`);
+    //   vscode.window.showInformationMessage(
+    //     `文件发送完成: ${session.filePath.split('/').pop()}`
+    //   );
+    // } else {
+    //   console.warn(`[handleFileReceived] 未找到发送会话: ${msg.sessionId}`);
+    // }
   }
 
-  private handleLinkMessage(payload: any, rinfo: dgram.RemoteInfo) {
-    const msg = payload as ChatMessage;
-    
-    // 只在收到非回复的link消息时才回复（防止无限循环）
-    if (!msg.isReply) {
-      const fromId = this.getSelfId ? this.getSelfId() : "";
-      this.sendMessage(
-        {
-          type: "link",
-          from: fromId,
-          timestamp: Date.now(),
-          isReply: true, // 标记为回复消息
-        },
-        rinfo.address,
-        rinfo.port
-      );
-    }
-    
-    // 通知收到 link 类型消息，并传递isReply状态
-    if (typeof payload.from === "string" && this.onLinkMessageReceived) {
-      this.onLinkMessageReceived({
-        ip: rinfo.address,
-        port: rinfo.port,
-        id: payload.from,
-        isReply: msg.isReply || false, // 传递原始的isReply状态
-      });
-    }
+  private handleLinkMessage(payload: ChatMessage) {
+    // const msg = payload as ChatMessage;
+
+    // // 只在收到非回复的link消息时才回复（防止无限循环）
+    // if (!msg.isReply) {
+    //   const fromId = this.getSelfId ? this.getSelfId() : "";
+    //   this.sendMessage(
+    //     {
+    //       type: "link",
+    //       from: fromId,
+    //       timestamp: Date.now(),
+    //       isReply: true, // 标记为回复消息
+    //     },
+    //     rinfo.address,
+    //     rinfo.port
+    //   );
+    // }
+
+    // // 通知收到 link 类型消息，并传递isReply状态
+    // if (typeof payload.from === "string" && this.onLinkMessageReceived) {
+    //   this.onLinkMessageReceived({
+    //     ip: rinfo.address,
+    //     port: rinfo.port,
+    //     id: payload.from,
+    //     isReply: msg.isReply || false, // 传递原始的isReply状态
+    //   });
+    // }
   }
 
-  private handleChatMessage(payload: ChatMessage, rinfo: dgram.RemoteInfo) {
-    const { from, value, timestamp } = payload;
+  private handleChatMessage(payload: ChatMessage) {
+    // const { from, value, timestamp } = payload;
 
-    let fromUsername = "";
-    let fromIp = "";
-    let fromPort = this.defaultPort;
-    const decoded = Buffer.from(from, "base64").toString("utf8");
-    const parts = decoded.split("-");
-    fromUsername = parts[0];
-    const fromParts = parts[1].split(":");
-    fromIp = fromParts[0];
-    fromPort = parseInt(fromParts[1]);
-    const ts = timestamp || Date.now();
-    
-    if (this.messageManager) {
-      this.messageManager.saveIncoming(
-        {
-          nickname: fromUsername,
-          ip: fromIp,
-          port: fromPort,
-        },
-        value || "",
-        ts,
-      );
-    }
-    if (this.view) {
-      this.view.webview.postMessage({
-        type: "receiveMessage",
-        from: fromUsername,
-        fromIp: fromIp,
-        fromPort: fromPort,
-        message: value || "",
-        timestamp: ts,
-      });
-    }
+    // let fromUsername = "";
+    // let fromIp = "";
+    // let fromPort = this.defaultPort;
+    // const decoded = Buffer.from(from, "base64").toString("utf8");
+    // const parts = decoded.split("-");
+    // fromUsername = parts[0];
+    // const fromParts = parts[1].split(":");
+    // fromIp = fromParts[0];
+    // fromPort = parseInt(fromParts[1]);
+    // const ts = timestamp || Date.now();
+
+    // if (this.messageManager) {
+    //   this.messageManager.saveIncoming(
+    //     {
+    //       nickname: fromUsername,
+    //       ip: fromIp,
+    //       port: fromPort,
+    //     },
+    //     value || "",
+    //     ts,
+    //   );
+    // }
+    // if (this.view) {
+    //   this.view.webview.postMessage({
+    //     type: "receiveMessage",
+    //     from: fromUsername,
+    //     fromIp: fromIp,
+    //     fromPort: fromPort,
+    //     message: value || "",
+    //     timestamp: ts,
+    //   });
+    // }
   }
 
   public async deleteHistory(contact: {
