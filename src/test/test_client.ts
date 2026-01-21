@@ -259,7 +259,6 @@ function handleChunkRequest(filePath: string, remoteAddr: string, remotePort: nu
             index: i,
             size: nbytes,
             data: buffer.subarray(0, nbytes),
-            finish: i === chunkCount - 1,
             total: chunkCount,
           }
         },
@@ -362,8 +361,8 @@ udpClient.on("message", (data, rinfo) => {
               log(`[文件接收] 进度: ${progress}% (${session.receivedChunks.size}/${session.totalChunks})`);
             }
             
-            // 如果是最后一个 chunk，检查完整性
-            if (msg.chunk.finish && session.receivedChunks.size === session.totalChunks) {
+            // 检查是否已接收所有 chunk
+            if (session.receivedChunks.size === session.totalChunks) {
               log(`[文件接收] 文件接收完成: ${session.filePath}, 共 ${session.totalChunks} 块`);
               
               // 发送接收完成确认

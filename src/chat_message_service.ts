@@ -14,7 +14,6 @@ export interface ChatFileChunk {
   index: number;
   size: number;
   data: Buffer;
-  finish: boolean;
   total?: number;
 }
 
@@ -399,7 +398,6 @@ export class ChatMessageService {
                 index: i,
                 size: nbytes,
                 data: buffer.subarray(0, nbytes),
-                finish: i === chunkCount - 1,
                 total: chunkCount,
               }
             },

@@ -452,8 +452,8 @@ export class ChatFileService {
       });
     }
 
-    // 检查是否接收完成（收到了最后一个chunk）
-    if (chunk.finish && session.receivedChunks.size === chunk.total) {
+    // 检查是否接收完成（已收到所有chunk）
+    if (chunk.total && session.receivedChunks.size === chunk.total) {
       console.log(`文件传输完成：${path.basename(value)}，共 ${chunk.total} 个块`);
       
       // 保存完成状态
