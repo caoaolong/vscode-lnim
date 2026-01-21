@@ -215,7 +215,7 @@ function sendFileMessage(filePath: string, ip: string, port: number) {
 
 const chunkSize: number = 1024;
 
-function handleChunkRequest(filePath: string, remoteAddr: string, remotePort: number, requestChunks?: number[], sessionId?: string) {
+async function handleChunkRequest(filePath: string, remoteAddr: string, remotePort: number, requestChunks?: number[], sessionId?: string) {
   try {
     const stat = fs.statSync(filePath);
     const chunkCount = Math.ceil(stat.size / chunkSize);
@@ -240,6 +240,7 @@ function handleChunkRequest(filePath: string, remoteAddr: string, remotePort: nu
     // 确定要发送的chunk列表
     const chunksToSend = requestChunks || Array.from({length: chunkCount}, (_, i) => i);
     
+    // 异步发送chunk，避免UDP缓冲区溢出
     for (const i of chunksToSend) {
       if (i < 0 || i >= chunkCount) {
         continue;
@@ -265,6 +266,11 @@ function handleChunkRequest(filePath: string, remoteAddr: string, remotePort: nu
         remoteAddr,
         remotePort
       );
+      
+      // 添加小延迟避免UDP缓冲区溢出（每发送1个chunk延迟1ms）
+      if (i < chunksToSend.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 1));
+      }
     }
     
     if (!requestChunks) {
