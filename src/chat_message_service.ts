@@ -333,7 +333,7 @@ export class ChatMessageService {
   /**
    * 处理chunk消息
    */
-  private handleChunkMessage(payload: any, rinfo: dgram.RemoteInfo) {
+  private async handleChunkMessage(payload: any, rinfo: dgram.RemoteInfo) {
     const data = payload as ChatMessage;
     
     // 如果有chunk数据，说明是发送chunk
@@ -395,41 +395,8 @@ export class ChatMessageService {
       
       console.log(`[handleChunkMessage] 将发送 ${chunksToSend.length} 个chunk`);
       
-      // 发送chunk
-      for (const i of chunksToSend) {
-        if (i < 0 || i >= chunkCount) {
-          continue;
-        }
-        
-        const buffer = Buffer.alloc(this.chunkSize);
-        const nbytes = fs.readSync(fd, buffer, 0, this.chunkSize, i * this.chunkSize);
-        
-        if (this.getSelfId) {
-          this.sendMessage(
-            {
-              type: "chunk",
-              value: filePath,
-              from: this.getSelfId(),
-              timestamp: Date.now(),
-              sessionId: sessionId,
-              chunk: {
-                index: i,
-                size: nbytes,
-                data: buffer.subarray(0, nbytes),
-                total: chunkCount,
-              }
-            },
-            rinfo.address,
-            rinfo.port
-          );
-          
-          if (i % 10 === 0 || i === chunksToSend.length - 1) {
-            console.log(`[handleChunkMessage] 已发送chunk ${i}/${chunkCount - 1}`);
-          }
-        }
-      }
-      
-      console.log(`[handleChunkMessage] 完成发送所有chunk`);
+      // 异步发送chunk，避免UDP缓冲区溢出
+      this.sendChunksWithDelay(fd, filePath, sessionId, chunksToSend, chunkCount, rinfo.address, rinfo.port);
       
       if (!requestChunks) {
         vscode.window.showInformationMessage(
@@ -439,6 +406,59 @@ export class ChatMessageService {
     } catch (error) {
       console.error("处理chunk请求时出错:", error);
     }
+  }
+  
+  /**
+   * 异步发送chunks，每个chunk之间添加延迟避免UDP缓冲区溢出
+   */
+  private async sendChunksWithDelay(
+    fd: number,
+    filePath: string,
+    sessionId: string,
+    chunksToSend: number[],
+    chunkCount: number,
+    targetIp: string,
+    targetPort: number
+  ) {
+    for (const i of chunksToSend) {
+      if (i < 0 || i >= chunkCount) {
+        continue;
+      }
+      
+      const buffer = Buffer.alloc(this.chunkSize);
+      const nbytes = fs.readSync(fd, buffer, 0, this.chunkSize, i * this.chunkSize);
+      
+      if (this.getSelfId) {
+        this.sendMessage(
+          {
+            type: "chunk",
+            value: filePath,
+            from: this.getSelfId(),
+            timestamp: Date.now(),
+            sessionId: sessionId,
+            chunk: {
+              index: i,
+              size: nbytes,
+              data: buffer.subarray(0, nbytes),
+              total: chunkCount,
+            }
+          },
+          targetIp,
+          targetPort
+        );
+        
+        if (i % 10 === 0 || i === chunksToSend.length - 1) {
+          console.log(`[handleChunkMessage] 已发送chunk ${i}/${chunkCount - 1}`);
+        }
+        
+        // 添加小延迟避免UDP缓冲区溢出（每发送1个chunk延迟1ms）
+        if (i < chunksToSend.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 1));
+        }
+      }
+    }
+    
+    console.log(`[handleChunkMessage] 完成发送所有chunk`);
   }
   
   /**
