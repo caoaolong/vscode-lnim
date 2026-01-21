@@ -33,6 +33,11 @@ VS Code 局域网即时通讯扩展 (Local Network Instant Messenger)。
 - **端口**: 通信使用的 UDP 端口（默认为 18080）。
 - **消息重试间隔** (`lnim.retryInterval`): 消息重试间隔时间（毫秒），默认 5000ms（5秒）。
 - **最大重试次数** (`lnim.maxRetries`): 最大重试次数，-1 表示无限重试，默认 -1。
+- **UDP接收缓冲区大小** (`lnim.udpRecvBufferSize`): UDP接收缓冲区大小（字节），默认 8MB (8388608字节)。
+  - 范围: 256KB - 32MB
+  - 较大的缓冲区可以提高大文件传输的可靠性
+  - 如果传输大文件时出现丢包，可以适当增大此值
+  - 注意：过大的值会占用更多内存
 
 
 ## 已知问题 (Known Issues)

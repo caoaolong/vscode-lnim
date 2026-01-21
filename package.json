@@ -63,6 +63,13 @@
           "default": -1,
           "minimum": -1,
           "description": "最大重试次数，-1 表示无限重试，默认 -1"
+        },
+        "lnim.udpRecvBufferSize": {
+          "type": "number",
+          "default": 8388608,
+          "minimum": 262144,
+          "maximum": 33554432,
+          "description": "UDP接收缓冲区大小（字节），默认 8MB (8388608字节)。范围: 256KB - 32MB。较大的缓冲区可以提高大文件传输的可靠性，但会占用更多内存。"
         }
       }
     }

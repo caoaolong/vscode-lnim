@@ -494,6 +494,15 @@ function shutdown() {
 }
 
 udpClient.bind(CLIENT_PORT, CLIENT_IP, () => {
+  // 增大UDP接收缓冲区，避免高速传输时丢包
+  try {
+    // 设置接收缓冲区为8MB
+    udpClient.setRecvBufferSize(8 * 1024 * 1024);
+    log('[UDP] 接收缓冲区已设置为 8MB');
+  } catch (error) {
+    errorLog(`[UDP] 无法设置接收缓冲区大小: ${error}`);
+  }
+  
   printBanner();
 });
 

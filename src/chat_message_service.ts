@@ -284,6 +284,20 @@ export class ChatMessageService {
       const targetPort = port || this.defaultPort;
       this.udpServer = dgram.createSocket("udp4");
       
+      // 增大UDP接收缓冲区，避免高速传输时丢包
+      // 从配置中读取缓冲区大小，默认8MB
+      const config = vscode.workspace.getConfiguration('lnim');
+      const bufferSize = config.get<number>('udpRecvBufferSize', 8 * 1024 * 1024);
+      
+      try {
+        this.udpServer.setRecvBufferSize(bufferSize);
+        const bufferSizeMB = (bufferSize / (1024 * 1024)).toFixed(2);
+        console.log(`[UDP] 接收缓冲区已设置为 ${bufferSizeMB} MB (${bufferSize} 字节)`);
+      } catch (error) {
+        console.warn('[UDP] 无法设置接收缓冲区大小:', error);
+        console.warn('[UDP] 将使用系统默认缓冲区大小，大文件传输可能不稳定');
+      }
+      
       this.udpServer.on("message", (data, rinfo) => {
         try {
           const text = data.toString();
