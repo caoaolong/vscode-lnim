@@ -284,14 +284,21 @@ window.addEventListener("message", (event) => {
       });
       break;
     }
-    case "receiveMessage":
-        addMessage({
-          text: message.message,
-          isSelf: false,
-          nickname: message.from,
-          timestamp: message.timestamp,
-        });
+    case "receiveMessage": {
+      // 构建 from 字段：格式为 ip|port|username
+      const fromKey = message.fromIp && message.fromPort 
+        ? `${message.fromIp}|${message.fromPort}|${message.from || ''}`
+        : undefined;
+      
+      addMessage({
+        from: fromKey,
+        text: message.message,
+        isSelf: false,
+        nickname: message.from,
+        timestamp: message.timestamp,
+      });
       break;
+    }
   }
 });
 

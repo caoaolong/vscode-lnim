@@ -769,6 +769,8 @@ export class ChatMessageService {
         this.view.webview.postMessage({
           type: "receiveMessage",
           from: fromUsername,
+          fromIp: fromIp,
+          fromPort: fromPort,
           message: value || "",
           timestamp: ts,
         });
