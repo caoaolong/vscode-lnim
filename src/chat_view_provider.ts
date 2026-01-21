@@ -52,7 +52,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       defaultPort: ChatViewProvider.DEFAULT_PORT,
       getSelfId: () => this.id(),
       onLinkMessageReceived: (result) => {
-        this.handleLinkMessageReceived(result);
+        this.handleLinkMessageReceived({
+          ...result,
+          isReply: true // link消息默认作为回复处理
+        });
       },
       context: this._context,
       fileService: this._chatFileService
