@@ -45,7 +45,6 @@ export class ChatFileService {
   
   constructor(rootPath: string) {
     this.rootPath = rootPath;
-    fs.mkdirSync(`${this.rootPath}/files`, { recursive: true });
   }
   
   public setMessageService(messageService: ChatMessageService): void {
