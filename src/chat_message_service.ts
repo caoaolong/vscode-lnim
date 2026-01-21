@@ -40,9 +40,7 @@ export interface ChatMessage {
 export interface ChatMessageServiceOptions {
   view?: vscode.WebviewView;
   defaultPort: number;
-  getSelfId?: () => string;
   fileService: ChatFileService;
-  onLinkMessageReceived?: (result: LinkMessageResult) => void;
   context: vscode.ExtensionContext;
 }
 
@@ -119,7 +117,7 @@ export class ChatMessageService {
     if (this.tcpServer) {
       try {
         this.tcpServer.close();
-      } catch {}
+      } catch { }
       this.tcpServer = undefined;
     }
     this.currentPort = port || this.defaultPort;
@@ -291,7 +289,7 @@ export class ChatMessageService {
   }
 
   private startTcpServer(port: number) {
-    this.tcpServer = net.createServer(this.handleMessage);
+    this.tcpServer = net.createServer((socket) => this.handleMessage(socket));
     this.tcpServer.listen(port, "0.0.0.0", () => {
       console.log(`TCP Server started, port: ${port}`);
     });
@@ -329,7 +327,6 @@ export class ChatMessageService {
         ChatContactManager.handleLinkMessage({
           ip: socket.remoteAddress,
           port: socket.remotePort,
-          isReply: msg.isReply || false,
           nickname: this.nickname(msg.from),
         });
       }
@@ -339,9 +336,21 @@ export class ChatMessageService {
   }
 
   private handleOfflineMessage(socket: net.Socket) {
-    console.log(`[TCP Server] 连接关闭`);
     const id = this.socketId(socket);
     this.connections.delete(id);
+
+    // TCP连接断开时，删除对应的联系人（标记为离线）
+    if (socket.remoteAddress && socket.remotePort) {
+      ChatContactManager.deleteContactByAddress(
+        socket.remoteAddress,
+        socket.remotePort
+      ).then(contacts => {
+        this.view?.webview.postMessage({
+          type: "updateContacts",
+          contacts: contacts,
+        });
+      })
+    }
   }
 
   /**

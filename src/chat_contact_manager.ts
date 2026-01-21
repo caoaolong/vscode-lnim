@@ -1,3 +1,4 @@
+import * as net from "net";
 import { ChatDataStore, StoredContact } from "./chat_data_store";
 
 type Contact = StoredContact;
@@ -6,7 +7,6 @@ export interface LinkMessageResult {
   ip: string;
   port: number;
   nickname: string;
-  isReply: boolean;
 }
 
 export class ChatContactManager {
@@ -22,23 +22,26 @@ export class ChatContactManager {
     return this.contacts;
   }
 
-  public static async resetAllStatuses(): Promise<Contact[]> {
-    this.contacts = await this.store.resetAllContactsStatus();
-    return this.contacts;
-  }
-
+  /**
+   * 删除联系人
+   * 只根据IP和端口删除，因为同一个IP+端口必定是同一个用户
+   */
   public static async deleteContact(contact: Contact): Promise<Contact[]> {
     this.contacts = await this.store.deleteContact(contact);
     return this.contacts;
   }
 
-  public static async handleLinkMessage(
-    result: LinkMessageResult,
-  ): Promise<Contact[] | undefined> {
-    if (!result.isReply) {
-      return;
-    }
+  /**
+   * 通过IP和端口删除联系人（便捷方法）
+   */
+  public static async deleteContactByAddress(ip: string, port: number): Promise<Contact[]> {
+    this.contacts = await this.store.deleteContactByAddress(ip, port);
+    return this.contacts;
+  }
 
+  public static async handleLinkMessage(
+    result: LinkMessageResult
+  ): Promise<Contact[] | undefined> {
     const existingContact = this.contacts.find(
       (c) => c.ip === result.ip && c.port === result.port,
     );
@@ -54,15 +57,10 @@ export class ChatContactManager {
         ip: result.ip,
         port: result.port,
         username: result.nickname,
+        status: true
       };
       this.contacts = await this.store.addContact(contact);
-      this.contacts = await this.store.updateContactStatus(
-        result.ip,
-        result.port,
-        true,
-      );
     }
-
     return this.contacts;
   }
 }

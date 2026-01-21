@@ -12,7 +12,7 @@ let currentUserSettings = {
     port: 18080
 };
 
-$(document).ready(() => {
+$(() => {
     vscode.postMessage({ type: "getSettings" });
     vscode.postMessage({ type: "getLocalIps" });
 });

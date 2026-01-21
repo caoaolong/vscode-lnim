@@ -35,7 +35,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._store = new ChatDataStore(this._context);
     this._userSettings = this._store.getUserSettings();
     ChatContactManager.init(this._store);
-    ChatContactManager.resetAllStatuses();
     this._currentPort =
       this._userSettings.port || ChatViewProvider.DEFAULT_PORT;
     this._messageManager = new ChatMessageManager(
@@ -47,18 +46,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this._messageService = new ChatMessageService(this._currentPort, {
       view: this._view,
       defaultPort: ChatViewProvider.DEFAULT_PORT,
-      getSelfId: () => this.id(),
-      onLinkMessageReceived: (result) => {
-        this.handleLinkMessageReceived(result);
-      },
       context: this._context,
       fileService: this._chatFileService,
     });
-  }
-
-  public id(): string {
-    const { nickname, ip, port } = this._userSettings;
-    return Buffer.from(`${nickname}-${ip}:${port}`, "utf-8").toString("base64");
   }
 
   public resolveWebviewView(
@@ -89,9 +79,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       switch (data.type) {
         case "navigate": {
           const page = data.page || "chat";
-          if (page === "contacts") {
-            await ChatContactManager.resetAllStatuses();
-          }
           webviewView.webview.html = this._getHtmlForWebview(
             webviewView.webview,
             page,
@@ -608,20 +595,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       text += possible.charAt(Math.floor(Math.random() * possible.length));
     }
     return text;
-  }
-
-  private async handleLinkMessageReceived(result: LinkMessageResult) {
-    const contacts = await ChatContactManager.handleLinkMessage(result);
-    if (!contacts) {
-      return;
-    }
-    const webviewView = this._currentWebviewView || this._view;
-    if (webviewView) {
-      webviewView.webview.postMessage({
-        type: "contactsSaved",
-        contacts,
-      });
-    }
   }
 
   /**

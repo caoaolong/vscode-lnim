@@ -72,12 +72,7 @@ export class ChatDataStore {
           x.username === c.username
       );
       if (!exists) {
-        // 新添加的联系人 status 默认为 false
-        const newContact: StoredContact = {
-          ...c,
-          status: false,
-        };
-        this.contacts.push(newContact);
+        this.contacts.push(c);
         await this.context.globalState.update("contacts", this.contacts);
       }
     }
@@ -102,22 +97,33 @@ export class ChatDataStore {
     return this.contacts;
   }
 
-  public async resetAllContactsStatus(): Promise<StoredContact[]> {
-    this.contacts.forEach((c) => {
-      c.status = false;
-    });
-    await this.context.globalState.update("contacts", this.contacts);
-    return this.contacts;
-  }
-
+  /**
+   * 删除联系人
+   * 只要IP和端口匹配就删除，因为同一个IP+端口必定是同一个用户
+   */
   public async deleteContact(c: StoredContact): Promise<StoredContact[]> {
+    const targetPort = c.port || ChatDataStore.DEFAULT_PORT;
     this.contacts = this.contacts.filter(
       (x) =>
         !(
           x.ip === c?.ip &&
-          (x.port || ChatDataStore.DEFAULT_PORT) ===
-            (c.port || ChatDataStore.DEFAULT_PORT) &&
-          x.username === c?.username
+          (x.port || ChatDataStore.DEFAULT_PORT) === targetPort
+        )
+    );
+    await this.context.globalState.update("contacts", this.contacts);
+    return this.contacts;
+  }
+
+  /**
+   * 通过IP和端口删除联系人（便捷方法）
+   */
+  public async deleteContactByAddress(ip: string, port: number): Promise<StoredContact[]> {
+    const targetPort = port || ChatDataStore.DEFAULT_PORT;
+    this.contacts = this.contacts.filter(
+      (x) =>
+        !(
+          x.ip === ip &&
+          (x.port || ChatDataStore.DEFAULT_PORT) === targetPort
         )
     );
     await this.context.globalState.update("contacts", this.contacts);

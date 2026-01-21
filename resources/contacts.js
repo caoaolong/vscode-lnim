@@ -7,7 +7,7 @@ const $backBtn = $("#back-btn");
 let contacts = [];
 let hasAutoChecked = false;
 
-$(document).ready(() => {
+$(() => {
     vscode.postMessage({ type: "getContacts" });
 });
 
@@ -30,7 +30,7 @@ function renderContacts() {
     $contactsList.empty();
     contacts.forEach(c => {
         const $item = $("<div>").addClass("contact-item");
-        
+
         const host = `${c.ip}:${c.port}`;
         const isOnline = c.status === true;
 
@@ -60,7 +60,7 @@ function renderContacts() {
 
         // Actions
         const $actionsDiv = $("<div>").addClass("contact-actions");
-        
+
         const $clearBtn = $("<button>").addClass("icon-btn warning-btn").attr("title", "Clear Chat History").on("click", (e) => {
             e.stopPropagation();
             vscode.postMessage({ type: "deleteRecord", contact: c });
