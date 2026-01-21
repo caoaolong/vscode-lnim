@@ -149,8 +149,11 @@ export class ChatMessageService {
    */
   public sendFileRequest(file: ChatFileMetadata, requestChunks?: number[]) {
     if (!this.getSelfId) {
+      console.error(`[sendFileRequest] getSelfId为空`);
       return;
     }
+    
+    console.log(`[sendFileRequest] 发送文件请求 - path: ${file.path}, ip: ${file.ip}, port: ${file.port}, requestChunks: ${requestChunks ? requestChunks.length : 'all'}`);
     
     this.sendMessage(
       {
@@ -163,6 +166,8 @@ export class ChatMessageService {
       file.ip,
       file.port
     );
+    
+    console.log(`[sendFileRequest] 文件请求已发送`);
   }
 
   public sendChatMessage(message: ChatMessage) {
@@ -247,10 +252,11 @@ export class ChatMessageService {
    */
   public sendFileReceivedConfirm(filePath: string, sessionId: string, ip: string, port: number): void {
     if (!this.getSelfId) {
+      console.error(`[sendFileReceivedConfirm] getSelfId为空`);
       return;
     }
     
-    console.log(`发送文件接收完成确认：sessionId=${sessionId}`);
+    console.log(`[sendFileReceivedConfirm] 发送文件接收完成确认 - sessionId: ${sessionId}, to: ${ip}:${port}`);
     
     this.sendMessage(
       {
@@ -263,6 +269,8 @@ export class ChatMessageService {
       ip,
       port
     );
+    
+    console.log(`[sendFileReceivedConfirm] 确认消息已发送`);
   }
 
   private startUdpServer(port: number) {
@@ -330,6 +338,7 @@ export class ChatMessageService {
     
     // 如果有chunk数据，说明是发送chunk
     if (data.chunk && typeof data.chunk.index === 'number') {
+      console.log(`[handleChunkMessage] 收到chunk - index: ${data.chunk.index}, size: ${data.chunk.size}, total: ${data.chunk.total}, sessionId: ${data.sessionId}`);
       this.fileService.saveChunk(data.value, data.chunk, rinfo.address, rinfo.port, data.sessionId);
       return;
     }
@@ -337,6 +346,8 @@ export class ChatMessageService {
     // 否则是请求chunk（文件下载请求）
     const filePath = typeof data.value === "string" ? data.value : "";
     const requestChunks = data.requestChunks;
+    
+    console.log(`[handleChunkMessage] 收到chunk请求 - filePath: ${filePath}, requestChunks: ${requestChunks ? requestChunks.length : 'all'}`);
     
     if (!filePath) {
       console.error("收到chunk请求，但文件路径为空");
@@ -362,6 +373,8 @@ export class ChatMessageService {
       // 创建或查找发送会话
       const sessionId = data.sessionId || `${rinfo.address}_${rinfo.port}_${filePath}_${Date.now()}`;
       
+      console.log(`[handleChunkMessage] 准备发送文件 - sessionId: ${sessionId}, chunkCount: ${chunkCount}, fileSize: ${stat.size}`);
+      
       let session = this.fileSendSessions.get(sessionId);
       if (!session) {
         session = {
@@ -372,10 +385,15 @@ export class ChatMessageService {
           targetPort: rinfo.port,
         };
         this.fileSendSessions.set(sessionId, session);
+        console.log(`[handleChunkMessage] 创建新的发送会话: ${sessionId}`);
+      } else {
+        console.log(`[handleChunkMessage] 使用现有发送会话: ${sessionId}`);
       }
 
       // 确定要发送的chunk列表
       const chunksToSend = requestChunks || Array.from({length: chunkCount}, (_, i) => i);
+      
+      console.log(`[handleChunkMessage] 将发送 ${chunksToSend.length} 个chunk`);
       
       // 发送chunk
       for (const i of chunksToSend) {
@@ -404,8 +422,14 @@ export class ChatMessageService {
             rinfo.address,
             rinfo.port
           );
+          
+          if (i % 10 === 0 || i === chunksToSend.length - 1) {
+            console.log(`[handleChunkMessage] 已发送chunk ${i}/${chunkCount - 1}`);
+          }
         }
       }
+      
+      console.log(`[handleChunkMessage] 完成发送所有chunk`);
       
       if (!requestChunks) {
         vscode.window.showInformationMessage(
@@ -423,23 +447,31 @@ export class ChatMessageService {
   private handleFileReceived(payload: any, rinfo: dgram.RemoteInfo) {
     const msg = payload as ChatMessage;
     
+    console.log(`[handleFileReceived] 收到文件接收完成确认 - sessionId: ${msg.sessionId}, from: ${rinfo.address}:${rinfo.port}`);
+    
     if (!msg.sessionId) {
+      console.error(`[handleFileReceived] sessionId为空`);
       return;
     }
     
     // 清理发送会话
     const session = this.fileSendSessions.get(msg.sessionId);
     if (session) {
+      console.log(`[handleFileReceived] 找到发送会话，准备清理 - sessionId: ${msg.sessionId}, filePath: ${session.filePath}`);
       try {
         fs.closeSync(session.fd);
+        console.log(`[handleFileReceived] 文件句柄已关闭`);
       } catch (error) {
-        console.error('关闭文件句柄失败:', error);
+        console.error('[handleFileReceived] 关闭文件句柄失败:', error);
       }
       
       this.fileSendSessions.delete(msg.sessionId);
+      console.log(`[handleFileReceived] 发送会话已删除，剩余会话数: ${this.fileSendSessions.size}`);
       vscode.window.showInformationMessage(
         `文件发送完成: ${session.filePath.split('/').pop()}`
       );
+    } else {
+      console.warn(`[handleFileReceived] 未找到发送会话: ${msg.sessionId}`);
     }
   }
 

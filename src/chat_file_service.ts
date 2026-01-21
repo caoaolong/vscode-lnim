@@ -274,6 +274,8 @@ export class ChatFileService {
     file: ChatFileMetadata,
     messageService: ChatMessageService,
   ): Promise<void> {
+    console.log(`[download] 开始下载文件 - path: ${file.path}, ip: ${file.ip}, port: ${file.port}`);
+    
     const safePath = this.getSafeRelativePath(file.path);
     const targetPath = path.join(
       this.rootPath,
@@ -282,6 +284,8 @@ export class ChatFileService {
     );
     const filename = path.basename(file.path);
     const stateKey = `${file.ip}_${file.port}_${safePath}`;
+
+    console.log(`[download] targetPath: ${targetPath}, stateKey: ${stateKey}`);
 
     // 检查是否有未完成的传输
     const existingState = this.loadFileState(stateKey);
@@ -338,10 +342,12 @@ export class ChatFileService {
     }
 
     // 创建文件并开始下载
+    console.log(`[download] 创建文件并准备下载`);
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
     fs.writeFileSync(targetPath, "");
     this.fds.set(targetPath, fs.openSync(targetPath, "r+"));
     
+    console.log(`[download] 发送文件请求`);
     // 发送chunk请求（不指定requestChunks，表示请求所有chunk）
     messageService.sendFileRequest(file);
   }
@@ -357,8 +363,11 @@ export class ChatFileService {
     sessionId?: string,
   ) {
     if (!value || !chunk) {
+      console.error(`[saveChunk] value或chunk为空`);
       return;
     }
+    
+    console.log(`[saveChunk] 收到chunk - index: ${chunk.index}, size: ${chunk.size}, total: ${chunk.total}, sessionId: ${sessionId}`);
     
     const safePath = this.getSafeRelativePath(value);
     const filePath = path.join(this.rootPath, `${ip}_${port}`, safePath);
@@ -367,6 +376,8 @@ export class ChatFileService {
     // 初始化进度条和会话
     const progressKey = `${ip}_${port}_${value}`;
     if (!this.activeDownloads.has(progressKey) && chunk.total && chunk.total > 0) {
+      console.log(`[saveChunk] 创建新的接收会话 - progressKey: ${progressKey}, totalChunks: ${chunk.total}`);
+      
       let resolveFunc: () => void;
       const p = new Promise<void>((resolve) => {
         resolveFunc = resolve;
@@ -398,21 +409,26 @@ export class ChatFileService {
         originalFileName: path.basename(value),
       });
       
+      console.log(`[saveChunk] 接收会话已创建`);
+      
       // 确保文件已打开
       if (!this.fds.has(filePath)) {
         fs.mkdirSync(path.dirname(filePath), { recursive: true });
         fs.writeFileSync(filePath, "");
         this.fds.set(filePath, fs.openSync(filePath, "r+"));
+        console.log(`[saveChunk] 文件已创建并打开: ${filePath}`);
       }
     }
     
     const session = this.activeDownloads.get(progressKey);
     if (!session) {
+      console.error(`[saveChunk] 未找到接收会话: ${progressKey}`);
       return;
     }
 
     const fd = this.fds.get(filePath);
     if (!fd) {
+      console.error(`[saveChunk] 未找到文件描述符: ${filePath}`);
       return;
     }
 
@@ -426,6 +442,8 @@ export class ChatFileService {
     // 记录已接收的chunk
     session.receivedChunks.add(chunk.index);
     
+    console.log(`[saveChunk] chunk已写入 - index: ${chunk.index}, 已接收: ${session.receivedChunks.size}/${session.totalChunks}`);
+    
     // 更新进度
     if (chunk.total && chunk.total > 0) {
       const percentage = Math.floor((session.receivedChunks.size / chunk.total) * 100);
@@ -433,6 +451,7 @@ export class ChatFileService {
       if (increment > 0) {
         session.report({ increment, message: `${percentage}% (${session.receivedChunks.size}/${chunk.total})` });
         session.lastPercentage = percentage;
+        console.log(`[saveChunk] 进度更新: ${percentage}%`);
       }
     }
     
@@ -450,11 +469,12 @@ export class ChatFileService {
         completed: false,
         timestamp: Date.now()
       });
+      console.log(`[saveChunk] 状态已保存 - 已接收: ${session.receivedChunks.size}/${session.totalChunks}`);
     }
 
     // 检查是否接收完成（已收到所有chunk）
     if (chunk.total && session.receivedChunks.size === chunk.total) {
-      console.log(`文件传输完成：${path.basename(value)}，共 ${chunk.total} 个块`);
+      console.log(`[saveChunk] 🎉 文件传输完成！${path.basename(value)}，共 ${chunk.total} 个块`);
       
       // 保存完成状态
       this.saveFileState(stateKey, {
@@ -470,23 +490,34 @@ export class ChatFileService {
         timestamp: Date.now()
       });
       
+      console.log(`[saveChunk] 完成状态已保存`);
+      
       // 发送接收完成确认
       if (this.messageServiceRef) {
+        console.log(`[saveChunk] 发送接收完成确认 - sessionId: ${session.sessionId}`);
         this.messageServiceRef.sendFileReceivedConfirm(
           value,
           session.sessionId,
           session.senderIp,
           session.senderPort
         );
+      } else {
+        console.error(`[saveChunk] messageServiceRef为空，无法发送确认`);
       }
       
       // 关闭文件
-      fs.closeSync(fd);
-      this.fds.delete(filePath);
+      try {
+        fs.closeSync(fd);
+        this.fds.delete(filePath);
+        console.log(`[saveChunk] 文件句柄已关闭`);
+      } catch (error) {
+        console.error(`[saveChunk] 关闭文件句柄失败:`, error);
+      }
       
       // 结束进度条
       session.resolve();
       this.activeDownloads.delete(progressKey);
+      console.log(`[saveChunk] 接收会话已清理，剩余会话数: ${this.activeDownloads.size}`);
 
       // 打开文件
       this.openFileInEditor(filePath);
