@@ -31,7 +31,6 @@ const udpClient = dgram.createSocket("udp4");
 // 文件接收会话管理
 interface FileReceiveSession {
   filePath: string;
-  fd: number;
   receivedChunks: Set<number>;
   totalChunks: number;
   chunkSize: number;
@@ -40,6 +39,7 @@ interface FileReceiveSession {
   senderPort: number;
   startTime: number; // 开始时间
   fileSize: number; // 文件大小
+  buffer: Buffer; // 内存缓冲区
 }
 const fileReceiveSessions = new Map<string, FileReceiveSession>();
 
@@ -361,8 +361,6 @@ udpClient.on("message", (data, rinfo) => {
     if (msg.type === "chunk") {
       // 如果有chunk数据，说明是接收chunk
       if (msg.chunk && typeof msg.chunk.index === 'number') {
-        log(`[接收] type=chunk, from=${rinfo.address}:${rinfo.port}, index=${msg.chunk.index}`);
-        
         // 保存接收到的 chunk
         if (msg.value) {
           const sessionKey = msg.sessionId || `${rinfo.address}_${rinfo.port}_${msg.value}`;
@@ -372,13 +370,14 @@ udpClient.on("message", (data, rinfo) => {
           if (!session && msg.chunk.total) {
             const fileName = extractFileName(msg.value);
             const receivePath = `./received_${Date.now()}_${fileName}`;
-            const fd = fs.openSync(receivePath, 'w');
             const fileSize = msg.chunk.total * 256; // 估算文件大小
             const fileSizeMB = (fileSize / (1024 * 1024)).toFixed(2);
             
+            // 创建内存缓冲区
+            const fileBuffer = Buffer.alloc(fileSize);
+            
             session = {
               filePath: receivePath,
-              fd,
               receivedChunks: new Set<number>(),
               totalChunks: msg.chunk.total,
               chunkSize: 256, // 与发送端保持一致
@@ -386,18 +385,19 @@ udpClient.on("message", (data, rinfo) => {
               senderIp: rinfo.address,
               senderPort: rinfo.port,
               startTime: Date.now(),
-              fileSize: fileSize
+              fileSize: fileSize,
+              buffer: fileBuffer
             };
             fileReceiveSessions.set(sessionKey, session);
             log(`[文件接收] 📥 开始接收: ${fileName} (~${fileSizeMB} MB, ${msg.chunk.total} 块)`);
           }
           
           if (session) {
-            // 写入 chunk 数据
-            const buffer = Buffer.isBuffer(msg.chunk.data)
+            // 写入内存缓冲区
+            const chunkBuffer = Buffer.isBuffer(msg.chunk.data)
               ? msg.chunk.data
               : Buffer.from((msg.chunk.data as any).data);
-            fs.writeSync(session.fd, buffer, 0, msg.chunk.size, msg.chunk.index * session.chunkSize);
+            chunkBuffer.copy(session.buffer, msg.chunk.index * session.chunkSize, 0, msg.chunk.size);
             session.receivedChunks.add(msg.chunk.index);
             
             // 显示进度
@@ -408,6 +408,9 @@ udpClient.on("message", (data, rinfo) => {
             
             // 检查是否已接收所有 chunk
             if (session.receivedChunks.size === session.totalChunks) {
+              // 写入文件
+              fs.writeFileSync(session.filePath, session.buffer);
+              
               const receiveTime = ((Date.now() - session.startTime) / 1000).toFixed(2);
               const fileSizeMB = (session.fileSize / (1024 * 1024)).toFixed(2);
               const speedMBps = (session.fileSize / (1024 * 1024) / parseFloat(receiveTime)).toFixed(2);
@@ -428,7 +431,6 @@ udpClient.on("message", (data, rinfo) => {
                 rinfo.port
               );
               
-              fs.closeSync(session.fd);
               fileReceiveSessions.delete(sessionKey);
             }
           }
@@ -479,12 +481,10 @@ udpClient.on("error", (err) => {
 function shutdown() {
   console.log("\n正在关闭 UDP 客户端...");
   
-  // 关闭所有文件句柄
-  for (const [, session] of fileReceiveSessions.entries()) {
-    try {
-      fs.closeSync(session.fd);
-    } catch {}
-  }
+  // 关闭所有文件接收会话（内存缓冲区会自动释放）
+  fileReceiveSessions.clear();
+  
+  // 关闭所有文件发送句柄
   for (const [, session] of fileSendSessions.entries()) {
     try {
       fs.closeSync(session.fd);

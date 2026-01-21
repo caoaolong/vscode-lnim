@@ -25,6 +25,7 @@ export class ChatFileService {
   // 与ChatMessageService保持一致
   private readonly chunkSize: number = 256;
   private fds: Map<string, number> = new Map();
+  
   // 存储文件下载进度
   private activeDownloads = new Map<string, {
     resolve: () => void;
@@ -38,13 +39,22 @@ export class ChatFileService {
     filePath: string;
     originalFilePath: string;
     originalFileName: string;
+    buffer: Buffer; // 内存缓冲区，用于批量写入
+    pendingWrites: Map<number, Buffer>; // 待写入的chunk
+    lastFlushTime: number; // 上次刷新时间
+    flushTimer?: NodeJS.Timeout; // 刷新定时器
   }>();
   
   rootPath: string;
   private messageServiceRef?: ChatMessageService;
   
+  // 批量写入配置
+  private readonly FLUSH_INTERVAL = 50; // 每50ms刷新一次
+  private readonly FLUSH_BATCH_SIZE = 200; // 或者累积200个chunk就刷新
+  
   constructor(rootPath: string) {
     this.rootPath = rootPath;
+    fs.mkdirSync(`${this.rootPath}/files`, { recursive: true });
   }
   
   public setMessageService(messageService: ChatMessageService): void {
@@ -52,6 +62,13 @@ export class ChatFileService {
   }
   
   public dispose(): void {
+    // 清理所有定时器
+    for (const [, session] of this.activeDownloads.entries()) {
+      if (session.flushTimer) {
+        clearTimeout(session.flushTimer);
+      }
+    }
+    
     // 关闭所有文件句柄
     for (const [filePath, fd] of this.fds.entries()) {
       try {
@@ -269,14 +286,11 @@ export class ChatFileService {
       return;
     }
     
-    console.log(`[saveChunk] 收到chunk - index: ${chunk.index}, size: ${chunk.size}, total: ${chunk.total}, sessionId: ${sessionId}`);
-    
     const safePath = this.getSafeRelativePath(value);
     const filePath = path.join(this.rootPath, `${ip}_${port}`, safePath);
-    const stateKey = `${ip}_${port}_${safePath}`;
+    const progressKey = `${ip}_${port}_${value}`;
     
     // 初始化进度条和会话
-    const progressKey = `${ip}_${port}_${value}`;
     if (!this.activeDownloads.has(progressKey) && chunk.total && chunk.total > 0) {
       console.log(`[saveChunk] 创建新的接收会话 - progressKey: ${progressKey}, totalChunks: ${chunk.total}`);
       
@@ -296,6 +310,10 @@ export class ChatFileService {
         }
         return p;
       });
+      
+      // 创建内存缓冲区
+      const totalSize = chunk.total * this.chunkSize;
+      const fileBuffer = Buffer.alloc(totalSize);
 
       this.activeDownloads.set(progressKey, {
         resolve: resolveFunc!,
@@ -309,17 +327,15 @@ export class ChatFileService {
         filePath: filePath,
         originalFilePath: value,
         originalFileName: path.basename(value),
+        buffer: fileBuffer,
+        pendingWrites: new Map<number, Buffer>(),
+        lastFlushTime: Date.now(),
       });
       
-      console.log(`[saveChunk] 接收会话已创建`);
+      console.log(`[saveChunk] 接收会话已创建，缓冲区大小: ${(totalSize / (1024 * 1024)).toFixed(2)} MB`);
       
-      // 确保文件已打开
-      if (!this.fds.has(filePath)) {
-        fs.mkdirSync(path.dirname(filePath), { recursive: true });
-        fs.writeFileSync(filePath, "");
-        this.fds.set(filePath, fs.openSync(filePath, "r+"));
-        console.log(`[saveChunk] 文件已创建并打开: ${filePath}`);
-      }
+      // 确保文件目录存在
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
     }
     
     const session = this.activeDownloads.get(progressKey);
@@ -328,38 +344,72 @@ export class ChatFileService {
       return;
     }
 
-    const fd = this.fds.get(filePath);
-    if (!fd) {
-      console.error(`[saveChunk] 未找到文件描述符: ${filePath}`);
-      return;
-    }
-
-    // 保存chunk数据
-    const buffer = Buffer.isBuffer(chunk.data)
+    // 将chunk数据写入内存缓冲区
+    const chunkBuffer = Buffer.isBuffer(chunk.data)
       ? chunk.data
       : Buffer.from((chunk.data as any).data);
-
-    fs.writeSync(fd, buffer, 0, chunk.size, chunk.index * this.chunkSize);
+    
+    // 直接写入内存缓冲区
+    chunkBuffer.copy(session.buffer, chunk.index * this.chunkSize, 0, chunk.size);
     
     // 记录已接收的chunk
     session.receivedChunks.add(chunk.index);
+    session.pendingWrites.set(chunk.index, chunkBuffer);
     
-    console.log(`[saveChunk] chunk已写入 - index: ${chunk.index}, 已接收: ${session.receivedChunks.size}/${session.totalChunks}`);
-    
-    // 更新进度
+    // 更新进度（降低日志频率）
     if (chunk.total && chunk.total > 0) {
       const percentage = Math.floor((session.receivedChunks.size / chunk.total) * 100);
       const increment = percentage - session.lastPercentage;
       if (increment > 0) {
         session.report({ increment, message: `${percentage}% (${session.receivedChunks.size}/${chunk.total})` });
         session.lastPercentage = percentage;
-        console.log(`[saveChunk] 进度更新: ${percentage}%`);
+        
+        // 只在整数百分比变化时输出日志
+        if (percentage % 5 === 0) {
+          console.log(`[saveChunk] 进度: ${percentage}% (${session.receivedChunks.size}/${chunk.total})`);
+        }
       }
     }
+    
+    // 批量刷新到磁盘：每累积一定数量或经过一定时间就刷新
+    const now = Date.now();
+    const shouldFlush = 
+      session.pendingWrites.size >= this.FLUSH_BATCH_SIZE || 
+      (now - session.lastFlushTime >= this.FLUSH_INTERVAL);
+    
+    if (shouldFlush && session.pendingWrites.size > 0) {
+      this.flushToFile(progressKey);
+    } else if (!session.flushTimer) {
+      // 设置定时器，确保数据能及时写入
+      session.flushTimer = setTimeout(() => {
+        this.flushToFile(progressKey);
+      }, this.FLUSH_INTERVAL);
+    }
 
-    // 检查是否接收完成（已收到所有chunk）
+    // 检查是否接收完成
     if (chunk.total && session.receivedChunks.size === chunk.total) {
-      console.log(`[saveChunk] 🎉 文件传输完成！${path.basename(value)}，共 ${chunk.total} 个块`);
+      console.log(`[saveChunk] 🎉 所有chunk已接收！准备写入文件...`);
+      
+      // 清除定时器
+      if (session.flushTimer) {
+        clearTimeout(session.flushTimer);
+        session.flushTimer = undefined;
+      }
+      
+      // 最后一次刷新
+      this.flushToFile(progressKey);
+      
+      // 将完整的缓冲区写入文件
+      try {
+        fs.writeFileSync(session.filePath, session.buffer);
+        console.log(`[saveChunk] 文件写入完成: ${session.filePath}`);
+      } catch (error) {
+        console.error(`[saveChunk] 文件写入失败:`, error);
+        vscode.window.showErrorMessage(`文件写入失败: ${path.basename(value)}`);
+        session.resolve();
+        this.activeDownloads.delete(progressKey);
+        return;
+      }
       
       // 发送接收完成确认
       if (this.messageServiceRef) {
@@ -374,22 +424,33 @@ export class ChatFileService {
         console.error(`[saveChunk] messageServiceRef为空，无法发送确认`);
       }
       
-      // 关闭文件
-      try {
-        fs.closeSync(fd);
-        this.fds.delete(filePath);
-        console.log(`[saveChunk] 文件句柄已关闭`);
-      } catch (error) {
-        console.error(`[saveChunk] 关闭文件句柄失败:`, error);
-      }
-      
       // 结束进度条
       session.resolve();
       this.activeDownloads.delete(progressKey);
       console.log(`[saveChunk] 接收会话已清理，剩余会话数: ${this.activeDownloads.size}`);
 
       // 打开文件
-      this.openFileInEditor(filePath);
+      this.openFileInEditor(session.filePath);
+    }
+  }
+  
+  /**
+   * 将待写入的chunk刷新到文件（实际上不需要中途刷新，因为我们使用了内存缓冲）
+   */
+  private flushToFile(progressKey: string): void {
+    const session = this.activeDownloads.get(progressKey);
+    if (!session) {
+      return;
+    }
+    
+    // 清空待写入队列
+    session.pendingWrites.clear();
+    session.lastFlushTime = Date.now();
+    
+    // 清除定时器
+    if (session.flushTimer) {
+      clearTimeout(session.flushTimer);
+      session.flushTimer = undefined;
     }
   }
 }
