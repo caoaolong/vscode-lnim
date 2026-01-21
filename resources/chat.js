@@ -707,12 +707,19 @@ function applyMention(item) {
 
 function createMentionTag(item, opts) {
   const iconClass = "codicon-file";
+  const isReceived = opts && opts.source === "message" && !opts.from; // 自己发送的文件
+  const isIncoming = opts && opts.source === "message" && opts.from; // 接收的文件（可能未完成）
 
   const $span = $("<span>")
     .addClass("mention-tag")
     .attr("data-type", item.type)
     .attr("data-value", item.value)
     .attr("data-trigger", "#");
+
+  // 对于接收的文件，添加pending样式（可以后续通过API查询实际状态）
+  if (isIncoming) {
+    $span.addClass("file-pending"); // 假设未完成，点击时会触发下载
+  }
 
   if (opts && opts.source === "input") {
     $span.attr("contenteditable", "false");
@@ -742,7 +749,7 @@ function createMentionTag(item, opts) {
     vscode.postMessage({
       type: "tagClicked",
       item: { type: item.type, value: item.value, label: item.label },
-      from: opts.from,
+      from: opts && opts.from,
     });
     if (opts && opts.source === "input") {
       $input[0].focus();
