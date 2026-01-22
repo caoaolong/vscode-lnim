@@ -3,7 +3,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import { ChatMessageManager, ChatContact } from "./chat_message_manager";
 import { ChatFileMetadata, ChatFileService } from "./chat_file_service";
-import { ChatContactManager, LinkMessageResult } from "./chat_contact_manager";
+import { ChatContactManager } from "./chat_contact_manager";
 
 export interface ChatUserSettings {
   nickname: string;
@@ -42,9 +42,13 @@ export interface ChatMessageServiceOptions {
   defaultPort: number;
   fileService: ChatFileService;
   context: vscode.ExtensionContext;
+  getSelfId: () => string;
 }
 
 export class ChatMessageService {
+	
+	public isServerRunning: boolean = false;
+
   private tcpServer?: net.Server;
   private connections: Map<string, net.Socket> = new Map();
   private currentPort: number;
@@ -53,13 +57,6 @@ export class ChatMessageService {
   private readonly getSelfId?: () => string;
   private readonly messageManager?: ChatMessageManager;
   private readonly fileService: ChatFileService;
-
-  // 优化chunk大小以适应MTU限制
-  // 考虑：以太网MTU 1500 - IP头20 - UDP头8 = 1472 bytes可用
-  // JSON元数据约270 bytes，Buffer在JSON中会膨胀
-  // 为避免IP分片，chunk数据应该较小
-  // 256 bytes数据 + 元数据 ≈ 800 bytes < 1472 bytes (安全)
-  private readonly chunkSize: number = 256;
 
   // 文件发送会话管理
   private fileSendSessions = new Map<
@@ -117,7 +114,7 @@ export class ChatMessageService {
     if (this.tcpServer) {
       try {
         this.tcpServer.close();
-      } catch { }
+      } catch {}
       this.tcpServer = undefined;
     }
     this.currentPort = port || this.defaultPort;
@@ -290,9 +287,32 @@ export class ChatMessageService {
 
   private startTcpServer(port: number) {
     this.tcpServer = net.createServer((socket) => this.handleMessage(socket));
+    
+    this.tcpServer.on("error", (err) => {
+      console.error(`TCP Server error:`, err);
+      this.updateServerStatus(false);
+      vscode.window.showErrorMessage(`TCP Server error: ${err.message}`);
+    });
+
+    this.tcpServer.on("close", () => {
+      console.log("TCP Server closed");
+      this.updateServerStatus(false);
+    });
+
     this.tcpServer.listen(port, "0.0.0.0", () => {
       console.log(`TCP Server started, port: ${port}`);
+      this.updateServerStatus(true);
     });
+  }
+
+  private updateServerStatus(isRunning: boolean) {
+    this.isServerRunning = isRunning;
+    if (this.view) {
+      this.view.webview.postMessage({
+        type: "updateUserStatus",
+        isOnline: isRunning,
+      });
+    }
   }
 
   private handleMessage(socket: net.Socket) {
@@ -309,6 +329,7 @@ export class ChatMessageService {
     });
     // 接收到离线消息
     socket.on("end", () => this.handleOfflineMessage(socket));
+		socket.on("close", () => this.handleOfflineMessage(socket));
     // 接收到错误消息
     socket.on("error", (err) => {
       vscode.window.showErrorMessage(
@@ -328,28 +349,39 @@ export class ChatMessageService {
           ip: socket.remoteAddress,
           port: socket.remotePort,
           nickname: this.nickname(msg.from),
+        }).then((contacts) => {
+          if (contacts && this.view) {
+            this.view.webview.postMessage({
+              type: "updateContacts",
+              contacts: contacts,
+            });
+          }
         });
       }
     } else if (msg.type === "chat") {
-      this.handleChatMessage(msg);
+      this.handleChatMessage(socket, msg);
     }
   }
 
   private handleOfflineMessage(socket: net.Socket) {
+		console.log(`${socket.remoteAddress}:${socket.remotePort} 离线`);
     const id = this.socketId(socket);
     this.connections.delete(id);
 
     // TCP连接断开时，删除对应的联系人（标记为离线）
     if (socket.remoteAddress && socket.remotePort) {
-      ChatContactManager.deleteContactByAddress(
+      ChatContactManager.updateContact(
         socket.remoteAddress,
-        socket.remotePort
-      ).then(contacts => {
+        socket.remotePort,
+        {
+          status: false,
+        },
+      ).then((contacts) => {
         this.view?.webview.postMessage({
           type: "updateContacts",
           contacts: contacts,
         });
-      })
+      });
     }
   }
 
@@ -417,83 +449,6 @@ export class ChatMessageService {
   }
 
   /**
-   * 异步发送chunks，批量发送避免UDP缓冲区溢出
-   */
-  private async sendChunksWithDelay(
-    fd: number,
-    filePath: string,
-    sessionId: string,
-    chunksToSend: number[],
-    chunkCount: number,
-    targetIp: string,
-    targetPort: number,
-  ) {
-    // 降低批次大小，增加延迟时间，确保接收端有足够时间处理
-    // 100个chunk × 256 bytes = 25.6 KB/批
-    const batchSize = 100;
-    const batchDelay = 20; // 增加到20ms
-
-    for (
-      let batchStart = 0;
-      batchStart < chunksToSend.length;
-      batchStart += batchSize
-    ) {
-      const batchEnd = Math.min(batchStart + batchSize, chunksToSend.length);
-
-      // 批量发送当前批次的chunk
-      for (let idx = batchStart; idx < batchEnd; idx++) {
-        const i = chunksToSend[idx];
-
-        if (i < 0 || i >= chunkCount) {
-          continue;
-        }
-
-        const buffer = Buffer.alloc(this.chunkSize);
-        const nbytes = fs.readSync(
-          fd,
-          buffer,
-          0,
-          this.chunkSize,
-          i * this.chunkSize,
-        );
-
-        if (this.getSelfId) {
-          this.sendMessage(
-            {
-              type: "chunk",
-              value: filePath,
-              from: this.getSelfId(),
-              timestamp: Date.now(),
-              sessionId: sessionId,
-              chunk: {
-                index: i,
-                size: nbytes,
-                data: buffer.subarray(0, nbytes),
-                total: chunkCount,
-              },
-            },
-            targetIp,
-            targetPort,
-          );
-        }
-      }
-
-      // 每批次之间延迟，给接收方时间处理
-      if (batchEnd < chunksToSend.length) {
-        await new Promise((resolve) => setTimeout(resolve, batchDelay));
-
-        if (batchEnd % 1000 === 0 || batchEnd === chunksToSend.length) {
-          console.log(
-            `[sendChunksWithDelay] 已发送chunk ${batchEnd}/${chunkCount}`,
-          );
-        }
-      }
-    }
-
-    console.log(`[sendChunksWithDelay] 完成发送所有chunk`);
-  }
-
-  /**
    * 处理文件接收完成确认
    */
   private handleFileReceived(payload: ChatMessage) {
@@ -523,39 +478,31 @@ export class ChatMessageService {
     // }
   }
 
-  private handleChatMessage(payload: ChatMessage) {
-    // const { from, value, timestamp } = payload;
-    // let fromUsername = "";
-    // let fromIp = "";
-    // let fromPort = this.defaultPort;
-    // const decoded = Buffer.from(from, "base64").toString("utf8");
-    // const parts = decoded.split("-");
-    // fromUsername = parts[0];
-    // const fromParts = parts[1].split(":");
-    // fromIp = fromParts[0];
-    // fromPort = parseInt(fromParts[1]);
-    // const ts = timestamp || Date.now();
-    // if (this.messageManager) {
-    //   this.messageManager.saveIncoming(
-    //     {
-    //       nickname: fromUsername,
-    //       ip: fromIp,
-    //       port: fromPort,
-    //     },
-    //     value || "",
-    //     ts,
-    //   );
-    // }
-    // if (this.view) {
-    //   this.view.webview.postMessage({
-    //     type: "receiveMessage",
-    //     from: fromUsername,
-    //     fromIp: fromIp,
-    //     fromPort: fromPort,
-    //     message: value || "",
-    //     timestamp: ts,
-    //   });
-    // }
+  private handleChatMessage(socket: net.Socket, msg: ChatMessage) {
+    const decoded = Buffer.from(msg.from, "base64").toString("utf8");
+    const parts = decoded.split("-");
+    const username = parts[0];
+    if (this.messageManager && socket.remoteAddress && socket.remotePort) {
+      this.messageManager.saveIncoming(
+        {
+          nickname: username,
+          ip: socket.remoteAddress,
+          port: socket.remotePort,
+        },
+        msg.value || "",
+        msg.timestamp,
+      );
+    }
+    if (this.view) {
+      this.view.webview.postMessage({
+        type: "receiveMessage",
+        from: username,
+        fromIp: socket.remoteAddress,
+        fromPort: socket.remotePort,
+        message: msg.value || "",
+        timestamp: msg.timestamp,
+      });
+    }
   }
 
   public async deleteHistory(contact: {

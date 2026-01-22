@@ -1,4 +1,3 @@
-import * as net from "net";
 import { ChatDataStore, StoredContact } from "./chat_data_store";
 
 type Contact = StoredContact;
@@ -22,6 +21,10 @@ export class ChatContactManager {
     return this.contacts;
   }
 
+  public static getContact(ip: string, port: number): Contact | undefined {
+    return this.contacts.find((c) => c.ip === ip && c.port === port);
+  }
+
   /**
    * 删除联系人
    * 只根据IP和端口删除，因为同一个IP+端口必定是同一个用户
@@ -36,6 +39,15 @@ export class ChatContactManager {
    */
   public static async deleteContactByAddress(ip: string, port: number): Promise<Contact[]> {
     this.contacts = await this.store.deleteContactByAddress(ip, port);
+    return this.contacts;
+  }
+
+  public static async updateContact(
+    ip: string,
+    port: number,
+    updates: { status?: boolean; username?: string }
+  ): Promise<Contact[]> {
+    this.contacts = await this.store.updateContact(ip, port, updates);
     return this.contacts;
   }
 

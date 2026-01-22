@@ -31,10 +31,16 @@
         <div id="contact-select"></div>
         <div id="message-input" contenteditable="true" placeholder="Type a message..."></div>
         <div id="mention-suggest"></div>
-        <div id="input-toolbar" style="margin-top: 4px;">
-            <button id="file-btn" class="icon-btn" title="选择文件">
-                <span class="codicon codicon-file"></span>
-            </button>
+        <div id="input-toolbar" style="margin-top: 4px; justify-content: space-between;">
+            <div style="display: flex; gap: 8px;">
+                <button id="file-btn" class="icon-btn" title="选择文件">
+                    <span class="codicon codicon-file"></span>
+                </button>
+            </div>
+            <div id="user-status" style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--vscode-descriptionForeground);">
+                <span id="current-username"></span>
+                <span id="current-status-dot" class="status-dot"></span>
+            </div>
         </div>
     </div>
 

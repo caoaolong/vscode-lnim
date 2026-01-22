@@ -48,6 +48,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       defaultPort: ChatViewProvider.DEFAULT_PORT,
       context: this._context,
       fileService: this._chatFileService,
+      getSelfId: () => {
+        const nickname = this._userSettings.nickname || "User";
+        return Buffer.from(`${nickname}-${Date.now()}`).toString("base64");
+      },
     });
   }
 
@@ -75,6 +79,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       webviewView.webview,
       "chat",
     );
+    webviewView.webview.postMessage({
+      type: "updateUserStatus",
+      isOnline: this._messageService.isServerRunning,
+    });
     webviewView.webview.onDidReceiveMessage(async (data) => {
       switch (data.type) {
         case "navigate": {
@@ -236,9 +244,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
           // 只负责发送消息，结果在 message 事件处理器中通过回调处理
           this._messageService.sendLinkMessage(tempContact, false);
-          break;
-        }
-        case "getContactsStatus": {
           break;
         }
         case "checkContactLink": {

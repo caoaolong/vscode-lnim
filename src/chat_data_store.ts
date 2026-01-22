@@ -97,6 +97,27 @@ export class ChatDataStore {
     return this.contacts;
   }
 
+  public async updateContact(
+    ip: string,
+    port: number | undefined,
+    updates: { status?: boolean; username?: string }
+  ): Promise<StoredContact[]> {
+    const targetPort = port || ChatDataStore.DEFAULT_PORT;
+    const contact = this.contacts.find(
+      (c) => c.ip === ip && (c.port || ChatDataStore.DEFAULT_PORT) === targetPort
+    );
+    if (contact) {
+      if (updates.status !== undefined) {
+        contact.status = updates.status;
+      }
+      if (updates.username !== undefined) {
+        contact.username = updates.username;
+      }
+      await this.context.globalState.update("contacts", this.contacts);
+    }
+    return this.contacts;
+  }
+
   /**
    * 删除联系人
    * 只要IP和端口匹配就删除，因为同一个IP+端口必定是同一个用户

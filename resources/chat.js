@@ -7,6 +7,8 @@ const $fileBtn = $("#file-btn");
 const $settingsBtn = $("#settings-btn");
 const $contactsBtn = $("#contacts-btn");
 const $filesBtn = $("#files-btn");
+const $currentUsername = $("#current-username");
+const $currentStatusDot = $("#current-status-dot");
 
 let currentUserSettings = {
   nickname: "User",
@@ -213,6 +215,11 @@ window.addEventListener("message", (event) => {
     case "updateSettings":
     case "settingsSaved":
       currentUserSettings = message.settings;
+      renderUserStatus();
+      break;
+    case "updateUserStatus":
+      isOnline = message.isOnline;
+      renderUserStatus();
       break;
     case "updateContacts":
     case "contactsSaved":
