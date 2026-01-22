@@ -13,6 +13,59 @@
         #settings-panel { width: 100%; max-width: 600px; margin: 0 auto; border: none; box-shadow: none; padding: 0; background: transparent; }
         .back-header { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; border-bottom: 1px solid var(--vscode-widget-border); padding-bottom: 10px; }
         .back-header h3 { margin: 0; }
+        
+        /* IP端口显示区域 */
+        .current-address-info {
+            background: var(--vscode-editor-background);
+            border: 1px solid var(--vscode-widget-border);
+            border-radius: 4px;
+            padding: 12px 16px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .address-content {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .address-label {
+            font-size: 11px;
+            color: var(--vscode-descriptionForeground);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .address-value {
+            font-size: 14px;
+            font-family: var(--vscode-editor-font-family);
+            color: var(--vscode-foreground);
+            font-weight: 500;
+            user-select: text;
+        }
+        .copy-btn {
+            padding: 6px 10px;
+            background: transparent;
+            border: 1px solid var(--vscode-button-border);
+            color: var(--vscode-button-foreground);
+            cursor: pointer;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.2s;
+            font-size: 12px;
+        }
+        .copy-btn:hover {
+            background: var(--vscode-button-hoverBackground);
+        }
+        .copy-btn.copied {
+            background: var(--vscode-button-background);
+            border-color: var(--vscode-button-background);
+        }
+        .copy-btn .codicon {
+            font-size: 14px;
+        }
     </style>
 </head>
 <body>
@@ -22,6 +75,18 @@
                 <span class="codicon codicon-arrow-left"></span>
             </button>
             <h3>Settings</h3>
+        </div>
+
+        <!-- 当前IP:端口信息显示 -->
+        <div class="current-address-info">
+            <div class="address-content">
+                <div class="address-label">当前地址 (Current Address)</div>
+                <div class="address-value" id="current-address">加载中...</div>
+            </div>
+            <button class="copy-btn" id="copy-address-btn" title="复制到剪贴板">
+                <span class="codicon codicon-copy"></span>
+                <span class="copy-btn-text">复制</span>
+            </button>
         </div>
 
         <div class="form-group">

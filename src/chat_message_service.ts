@@ -1,6 +1,7 @@
 import * as net from "net";
 import * as vscode from "vscode";
 import * as fs from "fs";
+import * as crypto from "crypto";
 import { ChatMessageManager, ChatContact } from "./chat_message_manager";
 import { ChatFileMetadata, ChatFileService } from "./chat_file_service";
 import { ChatContactManager } from "./chat_contact_manager";
@@ -19,7 +20,7 @@ export interface ChatFileChunk {
 }
 
 export interface ChatMessage {
-  type: "chat" | "link" | "chunk" | "file_received";
+  type: "chat" | "link" | "chunk" | "file_received" | "file" | "fstats";
   from: string;
   timestamp: number;
   // type=chat时，表示消息内容
@@ -27,14 +28,10 @@ export interface ChatMessage {
   value?: string;
   target?: string[];
   files?: string[];
-  // type=chunk时，表示文件块
-  chunk?: ChatFileChunk;
-  // 文件传输会话ID（用于关联同一个文件的所有 chunk）
-  sessionId?: string;
-  // type=chunk时，表示请求的chunk索引列表（用于增量下载）
-  requestChunks?: number[];
-  // type=link时，标识是否为回复消息（用于防止无限循环）
-  isReply?: boolean;
+  // 记录某个大块数据的唯一ID
+  unique?: string;
+  // 文件数据块
+  data?: Buffer;
 }
 
 export interface ChatMessageServiceOptions {
@@ -42,12 +39,12 @@ export interface ChatMessageServiceOptions {
   defaultPort: number;
   fileService: ChatFileService;
   context: vscode.ExtensionContext;
-  getSelfId: () => string;
+  settings: ChatUserSettings;
 }
 
 export class ChatMessageService {
-	
-	public isServerRunning: boolean = false;
+
+  public isServerRunning: boolean = false;
 
   private tcpServer?: net.Server;
   private connections: Map<string, net.Socket> = new Map();
@@ -57,7 +54,7 @@ export class ChatMessageService {
   private readonly getSelfId?: () => string;
   private readonly messageManager?: ChatMessageManager;
   private readonly fileService: ChatFileService;
-
+  private readonly settings: ChatUserSettings;
   // 文件发送会话管理
   private fileSendSessions = new Map<
     string,
@@ -75,11 +72,15 @@ export class ChatMessageService {
     this.defaultPort = options.defaultPort;
     this.view = options.view;
     this.fileService = options.fileService;
-    this.fileService.setMessageService(this);
     this.messageManager = new ChatMessageManager(
       options.context.globalStorageUri.fsPath,
     );
+    this.settings = options.settings;
     this.startTcpServer(this.currentPort);
+  }
+
+  public selfId(): string {
+    return Buffer.from(`${this.settings.nickname}-${Date.now()}`).toString("base64");
   }
 
   public dispose(): void {
@@ -104,6 +105,8 @@ export class ChatMessageService {
 
   public attachView(view: vscode.WebviewView) {
     this.view = view;
+    // 立即发送当前服务器状态
+    this.updateServerStatus(this.isServerRunning);
   }
 
   public getPort(): number {
@@ -114,7 +117,7 @@ export class ChatMessageService {
     if (this.tcpServer) {
       try {
         this.tcpServer.close();
-      } catch {}
+      } catch { }
       this.tcpServer = undefined;
     }
     this.currentPort = port || this.defaultPort;
@@ -140,29 +143,17 @@ export class ChatMessageService {
   /**
    * 请求下载文件（发送chunk请求）
    */
-  public sendFileRequest(file: ChatFileMetadata, requestChunks?: number[]) {
-    if (!this.getSelfId) {
-      console.error(`[sendFileRequest] getSelfId为空`);
-      return;
-    }
-
-    console.log(
-      `[sendFileRequest] 发送文件请求 - path: ${file.path}, ip: ${file.ip}, port: ${file.port}, requestChunks: ${requestChunks ? requestChunks.length : "all"}`,
-    );
-
-    this.sendMessage(
-      {
-        type: "chunk",
-        value: file.path,
-        from: this.getSelfId(),
-        timestamp: Date.now(),
-        requestChunks: requestChunks, // 如果指定，则只请求这些chunk
-      },
-      file.ip,
-      file.port,
-    );
-
-    console.log(`[sendFileRequest] 文件请求已发送`);
+  public sendFileRequest(file: ChatFileMetadata): string {
+    // 生成16字节（16个字符）的随机字符串
+    const uuid = crypto.randomBytes(8).toString("hex");
+    this.sendMessage({
+      type: "file",
+      from: this.selfId(),
+      timestamp: Date.now(),
+      value: file.path,
+      unique: uuid,
+    }, file.ip, file.port);
+    return uuid;
   }
 
   public sendChatMessage(message: ChatMessage) {
@@ -215,31 +206,31 @@ export class ChatMessageService {
   }
 
   public sendLinkMessage(contact: ChatContact, showError: boolean = false) {
-    if (!contact || !contact.ip) {
-      if (showError) {
-        vscode.window.showErrorMessage(
-          "无法发送链接检测消息：目标或本地 UDP 服务无效",
-        );
-      }
-      return;
-    }
-    const targetPort =
-      contact.port && contact.port > 0 && contact.port <= 65535
-        ? contact.port
-        : this.defaultPort;
+    // if (!contact || !contact.ip) {
+    //   if (showError) {
+    //     vscode.window.showErrorMessage(
+    //       "无法发送链接检测消息：目标或本地 UDP 服务无效",
+    //     );
+    //   }
+    //   return;
+    // }
+    // const targetPort =
+    //   contact.port && contact.port > 0 && contact.port <= 65535
+    //     ? contact.port
+    //     : this.defaultPort;
 
-    const fromId = this.getSelfId ? this.getSelfId() : "";
+    // const fromId = this.getSelfId ? this.getSelfId() : "";
 
-    this.sendMessage(
-      {
-        type: "link",
-        from: fromId,
-        timestamp: Date.now(),
-        isReply: false, // 主动发送的link消息，不是回复
-      },
-      contact.ip,
-      targetPort,
-    );
+    // this.sendMessage(
+    //   {
+    //     type: "link",
+    //     from: fromId,
+    //     timestamp: Date.now(),
+    //     isReply: false, // 主动发送的link消息，不是回复
+    //   },
+    //   contact.ip,
+    //   targetPort,
+    // );
   }
 
   /**
@@ -251,28 +242,28 @@ export class ChatMessageService {
     ip: string,
     port: number,
   ): void {
-    if (!this.getSelfId) {
-      console.error(`[sendFileReceivedConfirm] getSelfId为空`);
-      return;
-    }
+    // if (!this.getSelfId) {
+    //   console.error(`[sendFileReceivedConfirm] getSelfId为空`);
+    //   return;
+    // }
 
-    console.log(
-      `[sendFileReceivedConfirm] 发送文件接收完成确认 - sessionId: ${sessionId}, to: ${ip}:${port}`,
-    );
+    // console.log(
+    //   `[sendFileReceivedConfirm] 发送文件接收完成确认 - sessionId: ${sessionId}, to: ${ip}:${port}`,
+    // );
 
-    this.sendMessage(
-      {
-        type: "file_received",
-        from: this.getSelfId(),
-        timestamp: Date.now(),
-        sessionId,
-        value: filePath,
-      },
-      ip,
-      port,
-    );
+    // this.sendMessage(
+    //   {
+    //     type: "file_received",
+    //     from: this.getSelfId(),
+    //     timestamp: Date.now(),
+    //     sessionId,
+    //     value: filePath,
+    //   },
+    //   ip,
+    //   port,
+    // );
 
-    console.log(`[sendFileReceivedConfirm] 确认消息已发送`);
+    // console.log(`[sendFileReceivedConfirm] 确认消息已发送`);
   }
 
   private socketId(socket: net.Socket): string {
@@ -287,22 +278,14 @@ export class ChatMessageService {
 
   private startTcpServer(port: number) {
     this.tcpServer = net.createServer((socket) => this.handleMessage(socket));
-    
+
     this.tcpServer.on("error", (err) => {
-      console.error(`TCP Server error:`, err);
       this.updateServerStatus(false);
       vscode.window.showErrorMessage(`TCP Server error: ${err.message}`);
     });
-
-    this.tcpServer.on("close", () => {
-      console.log("TCP Server closed");
-      this.updateServerStatus(false);
-    });
-
-    this.tcpServer.listen(port, "0.0.0.0", () => {
-      console.log(`TCP Server started, port: ${port}`);
-      this.updateServerStatus(true);
-    });
+    // 服务器状态
+    this.tcpServer.on("close", () => this.updateServerStatus(false));
+    this.tcpServer.listen(port, "0.0.0.0", () => this.updateServerStatus(true));
   }
 
   private updateServerStatus(isRunning: boolean) {
@@ -316,20 +299,23 @@ export class ChatMessageService {
   }
 
   private handleMessage(socket: net.Socket) {
-    console.log(
-      `[TCP Server] 新连接: ${socket.remoteAddress}:${socket.remotePort}`,
-    );
     const id = this.socketId(socket);
     this.connections.set(id, socket);
     // 接收到消息
     socket.on("data", (buffer) => {
-      const data = JSON.parse(buffer.toString("utf8")) as ChatMessage;
-      console.log(data);
-      this.handleDataMessage(socket, data);
+      try {
+        const data = JSON.parse(buffer.toString("utf8")) as ChatMessage;
+        this.handleDataMessage(socket, data);
+      } catch (error) {
+        // uuid是16个字符的hex字符串，编码为8字节的二进制Buffer
+        const fpId = buffer.subarray(0, 8).toString("hex");
+        const fpData = buffer.subarray(8);
+        this.fileService.saveChunk(fpId, fpData);
+      }
     });
     // 接收到离线消息
     socket.on("end", () => this.handleOfflineMessage(socket));
-		socket.on("close", () => this.handleOfflineMessage(socket));
+    socket.on("close", () => this.handleOfflineMessage(socket));
     // 接收到错误消息
     socket.on("error", (err) => {
       vscode.window.showErrorMessage(
@@ -343,6 +329,8 @@ export class ChatMessageService {
       this.handleChunkMessage(msg);
     } else if (msg.type === "file_received") {
       this.handleFileReceived(msg);
+    } else if (msg.type === "fstats") {
+      this.handleStatsMessage(socket, msg);
     } else if (msg.type === "link") {
       if (socket.remoteAddress && socket.remotePort) {
         ChatContactManager.handleLinkMessage({
@@ -360,14 +348,17 @@ export class ChatMessageService {
       }
     } else if (msg.type === "chat") {
       this.handleChatMessage(socket, msg);
+    } else if (msg.type === "file") {
+      console.log(msg);
     }
+  }
+  handleStatsMessage(socket: net.Socket, msg: ChatMessage) {
+    this.fileService.updateSession(msg);
   }
 
   private handleOfflineMessage(socket: net.Socket) {
-		console.log(`${socket.remoteAddress}:${socket.remotePort} 离线`);
     const id = this.socketId(socket);
     this.connections.delete(id);
-
     // TCP连接断开时，删除对应的联系人（标记为离线）
     if (socket.remoteAddress && socket.remotePort) {
       ChatContactManager.updateContact(
@@ -500,6 +491,7 @@ export class ChatMessageService {
         fromIp: socket.remoteAddress,
         fromPort: socket.remotePort,
         message: msg.value || "",
+        files: msg.files || [],
         timestamp: msg.timestamp,
       });
     }
@@ -529,5 +521,17 @@ export class ChatMessageService {
       return;
     }
     await this.messageManager.clearAllHistory();
+  }
+
+  /**
+   * 通知UI更新文件列表
+   */
+  public notifyFilesUpdated(files: any[]): void {
+    if (this.view) {
+      this.view.webview.postMessage({
+        type: "updateFiles",
+        files: files,
+      });
+    }
   }
 }

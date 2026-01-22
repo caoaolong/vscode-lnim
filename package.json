@@ -47,31 +47,6 @@
           "when": "resourceScheme == file"
         }
       ]
-    },
-    "configuration": {
-      "title": "LNIM",
-      "properties": {
-        "lnim.retryInterval": {
-          "type": "number",
-          "default": 5000,
-          "minimum": 1000,
-          "maximum": 60000,
-          "description": "消息重试间隔时间（毫秒），默认 5000ms（5秒）"
-        },
-        "lnim.maxRetries": {
-          "type": "number",
-          "default": -1,
-          "minimum": -1,
-          "description": "最大重试次数，-1 表示无限重试，默认 -1"
-        },
-        "lnim.udpRecvBufferSize": {
-          "type": "number",
-          "default": 16777216,
-          "minimum": 262144,
-          "maximum": 67108864,
-          "description": "UDP接收缓冲区大小（字节），默认 16MB (16777216字节)。范围: 256KB - 64MB。较大的缓冲区可以提高大文件传输的可靠性，但会占用更多内存。注意：操作系统可能有限制，macOS可用 sudo sysctl -w net.inet.udp.recvspace=16777216 调整。"
-        }
-      }
     }
   },
   "scripts": {
@@ -104,6 +79,6 @@
   "dependencies": {
     "@vscode/codicons": "^0.0.44",
     "jquery": "^3.7.1",
-    "uuid4": "^2.0.3"
+    "uuid": "^13.0.0"
   }
 }

@@ -3,6 +3,7 @@ const $chatBox = $("#chat-box");
 const $input = $("#message-input");
 const $mentionSuggest = $("#mention-suggest");
 const $contactSelect = $("#contact-select");
+const $targetTagsContainer = $("#target-tags-container");
 const $fileBtn = $("#file-btn");
 const $settingsBtn = $("#settings-btn");
 const $contactsBtn = $("#contacts-btn");
@@ -15,6 +16,7 @@ let currentUserSettings = {
   ip: "",
   port: 18080,
 };
+let isOnline = false; // TCP服务器在线状态
 let lastMessageTime = 0;
 let contacts = [];
 let allContacts = [];
@@ -32,6 +34,8 @@ $(() => {
   vscode.postMessage({ type: "getSettings" });
   vscode.postMessage({ type: "getContacts" });
   vscode.postMessage({ type: "getChatHistory" });
+  vscode.postMessage({ type: "getServerStatus" }); // 请求服务器状态
+  renderUserStatus(); // 初始化用户状态显示
 });
 
 // --- Event Listeners ---
@@ -183,7 +187,7 @@ $input.on("input", () => {
 });
 
 $fileBtn.on("click", () => {
-  vscode.postMessage({ type: "selectImage" });
+  vscode.postMessage({ type: "selectFile" });
 });
 
 function insertTagAtCursor(item) {
@@ -226,6 +230,7 @@ window.addEventListener("message", (event) => {
       contacts = message.contacts || [];
       allContacts = contacts.slice();
       renderContactSelect();
+      renderTargetTags(); // 更新目标标签显示
       if (mentionActive) {
         filterMention();
       }
@@ -300,6 +305,7 @@ window.addEventListener("message", (event) => {
       addMessage({
         from: fromKey,
         text: message.message,
+        files: message.files || [],
         isSelf: false,
         nickname: message.from,
         timestamp: message.timestamp,
@@ -387,14 +393,81 @@ function buildStructuredMessage(text) {
   };
 }
 
+/**
+ * 渲染目标标签（已选择的目标）
+ */
+function renderTargetTags() {
+  if (!$targetTagsContainer || $targetTagsContainer.length === 0) {
+    return;
+  }
+  
+  $targetTagsContainer.empty();
+  
+  // 过滤：只显示在线的已选择联系人
+  const onlineSelectedContacts = (selectedContacts || []).filter((selected) => {
+    const contact = contacts.find((c) => {
+      const cIp = c.ip || "";
+      const cPort = typeof c.port === "number" && c.port > 0 ? c.port : 0;
+      const sIp = selected.ip || "";
+      const sPort = typeof selected.port === "number" && selected.port > 0 ? selected.port : 0;
+      return cIp === sIp && cPort === sPort;
+    });
+    // 只显示在线的联系人（status为true或undefined表示在线）
+    return contact && (contact.status === true || contact.status === undefined);
+  });
+  
+  if (onlineSelectedContacts.length === 0) {
+    return;
+  }
+  
+  onlineSelectedContacts.forEach((contact) => {
+    const label = contact.username || contact.ip || "未知";
+    const $tag = $("<div>").addClass("target-tag");
+    
+    const $label = $("<span>").addClass("tag-label").text(label);
+    const $close = $("<span>")
+      .addClass("tag-close")
+      .html('<span class="codicon codicon-close"></span>');
+    
+    $tag.append($label);
+    $tag.append($close);
+    
+    // 点击关闭按钮移除目标
+    $close.on("click", (e) => {
+      e.stopPropagation();
+      const idx = selectedContacts.findIndex((sc) => {
+        const sip = sc.ip || "";
+        const sport = typeof sc.port === "number" && sc.port > 0 ? sc.port : 0;
+        const cip = contact.ip || "";
+        const cport = typeof contact.port === "number" && contact.port > 0 ? contact.port : 0;
+        return sip === cip && sport === cport;
+      });
+      if (idx >= 0) {
+        selectedContacts.splice(idx, 1);
+        renderTargetTags();
+        renderContactSelect();
+      }
+    });
+    
+    $targetTagsContainer.append($tag);
+  });
+}
+
 function renderContactSelect() {
   if (!$contactSelect || $contactSelect.length === 0) {
     return;
   }
   $contactSelect.empty();
-  if (!contacts || contacts.length === 0) {
+  
+  // 只显示在线的联系人
+  const onlineContacts = (contacts || []).filter((c) => {
+    return c.status === true || c.status === undefined;
+  });
+  
+  if (onlineContacts.length === 0) {
     return;
   }
+  
   const selectedKeys = new Set(
     (selectedContacts || []).map((c) => {
       const ip = c.ip || "";
@@ -403,7 +476,7 @@ function renderContactSelect() {
     }),
   );
 
-  contacts.forEach((c) => {
+  onlineContacts.forEach((c) => {
     const ip = c.ip || "";
     const port = typeof c.port === "number" && c.port > 0 ? c.port : 0;
     const key = ip + ":" + port;
@@ -431,10 +504,31 @@ function renderContactSelect() {
         });
         $item.addClass("selected");
       }
+      // 更新目标标签显示
+      renderTargetTags();
     });
 
     $contactSelect.append($item);
   });
+}
+
+/**
+ * 渲染用户状态（右下角显示）
+ * 显示当前用户名和在线状态（基于TCP服务器状态）
+ */
+function renderUserStatus() {
+  // 更新用户名
+  const nickname = currentUserSettings?.nickname || "User";
+  $currentUsername.text(nickname);
+  
+  // 更新在线状态指示器
+  if (isOnline) {
+    $currentStatusDot.removeClass("offline").addClass("online");
+    $currentStatusDot.attr("title", "在线 (TCP服务已启动)");
+  } else {
+    $currentStatusDot.removeClass("online").addClass("offline");
+    $currentStatusDot.attr("title", "离线 (TCP服务未启动)");
+  }
 }
 
 function checkAndAddTimestamp(currentTimestamp) {
@@ -450,7 +544,7 @@ function checkAndAddTimestamp(currentTimestamp) {
   }
 }
 
-function addMessage({ from, text, isSelf, nickname }) {
+function addMessage({ from, text, isSelf, nickname, files }) {
   const $container = $("<div>").addClass(
     "message-container" + (isSelf ? " self" : " other"),
   );
@@ -458,7 +552,7 @@ function addMessage({ from, text, isSelf, nickname }) {
   const $nicknameDiv = $("<div>").addClass("nickname").text(nickname);
 
   const $messageDiv = $("<div>").addClass("message");
-  renderMessageContent($messageDiv[0], text, from);
+  renderMessageContent($messageDiv[0], text, from, files);
 
   $container.append($nicknameDiv).append($messageDiv);
 
@@ -466,43 +560,80 @@ function addMessage({ from, text, isSelf, nickname }) {
   $chatBox.scrollTop($chatBox[0].scrollHeight);
 }
 
-function renderMessageContent(container, text, from) {
+function renderMessageContent(container, text, from, files) {
   const $container = $(container);
   $container.empty();
-  const pattern = /\{#([^}]+)\}/g;
+  
+  // 辅助函数：获取文件信息
+  function getFileInfo(filePath) {
+    if (!filePath) return null;
+    const label = filePath.split(/[\/\\]/).pop();
+    return { type: "file", label };
+  }
+  
+  // 收集所有需要显示的文件（来自files数组）
+  const filesSet = new Set();
+  const fileInfoMap = new Map();
+  if (files && Array.isArray(files) && files.length > 0) {
+    files.forEach((filePath) => {
+      if (!filePath) return;
+      filesSet.add(filePath);
+      fileInfoMap.set(filePath, getFileInfo(filePath));
+    });
+  }
+  
+  // 按文本顺序渲染：遇到{#...}时用tag替换，隐藏原始文本
+  const textPattern = /\{#([^}]+)\}/g;
   let lastIndex = 0;
-  let match;
+  let textMatch;
+  const processedInText = new Set(); // 记录文本中已处理的文件
 
-  while ((match = pattern.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      appendPlainSegment(text.slice(lastIndex, match.index));
+  while ((textMatch = textPattern.exec(text)) !== null) {
+    // 显示{#...}之前的文本
+    if (textMatch.index > lastIndex) {
+      appendPlainSegment(text.slice(lastIndex, textMatch.index));
     }
-    const filePath = match[1] || "";
+    
+    // 用tag替换{#...}部分，隐藏原始文本
+    const filePath = textMatch[1] || "";
     if (filePath) {
-      const label = filePath.split(/[\/\\]/).pop();
-      let type = "file";
-      if (!filePath.includes(".")) {
-        type = "folder";
+      processedInText.add(filePath);
+      const fileInfo = fileInfoMap.get(filePath) || getFileInfo(filePath);
+      if (fileInfo) {
+        const item = { type: fileInfo.type, value: filePath, label: fileInfo.label };
+        const tag = createMentionTag(item, {
+          closable: false,
+          source: "message",
+          from: from,
+        });
+        $container.append(tag);
       }
-      if (/\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(filePath)) {
-        type = "image";
-      }
-      const item = { type, value: filePath, label };
-      const tag = createMentionTag(item, {
-        closable: false,
-        source: "message",
-        from: from,
-      });
-      $container.append(tag);
-    } else {
-      $container.append(document.createTextNode(match[0]));
     }
-    lastIndex = pattern.lastIndex;
+    
+    lastIndex = textPattern.lastIndex;
   }
 
+  // 显示剩余的文本
   if (lastIndex < text.length) {
     appendPlainSegment(text.slice(lastIndex));
   }
+  
+  // 如果files数组中有文件但文本中没有对应的{#...}，在末尾追加这些tag
+  filesSet.forEach((filePath) => {
+    if (!processedInText.has(filePath)) {
+      const fileInfo = fileInfoMap.get(filePath);
+      if (fileInfo) {
+        const item = { type: fileInfo.type, value: filePath, label: fileInfo.label };
+        const tag = createMentionTag(item, {
+          closable: false,
+          source: "message",
+          from: from,
+        });
+        $container.append(document.createTextNode(" "));
+        $container.append(tag);
+      }
+    }
+  });
 
   function appendPlainSegment(segment) {
     if (!segment) {

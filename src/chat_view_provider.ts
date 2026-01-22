@@ -48,11 +48,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       defaultPort: ChatViewProvider.DEFAULT_PORT,
       context: this._context,
       fileService: this._chatFileService,
-      getSelfId: () => {
-        const nickname = this._userSettings.nickname || "User";
-        return Buffer.from(`${nickname}-${Date.now()}`).toString("base64");
-      },
+      settings: this._userSettings,
     });
+    // 设置messageService引用，用于文件传输进度通知
+    this._chatFileService.setMessageService(this._messageService);
   }
 
   public resolveWebviewView(
@@ -111,6 +110,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           webviewView.webview.postMessage({
             type: "updateSettings",
             settings: this._userSettings,
+          });
+          break;
+        }
+        case "getServerStatus": {
+          // 发送TCP服务器状态
+          webviewView.webview.postMessage({
+            type: "updateUserStatus",
+            isOnline: this._messageService.isServerRunning,
           });
           break;
         }
@@ -293,6 +300,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           await this._messageService.clearAllHistory();
           break;
         }
+        case "copyToClipboard": {
+          // 复制文本到剪贴板
+          const text = data.text || "";
+          if (text) {
+            try {
+              await vscode.env.clipboard.writeText(text);
+              // 发送成功确认
+              webviewView.webview.postMessage({
+                type: "copySuccess",
+              });
+              vscode.window.showInformationMessage(`已复制: ${text}`);
+            } catch (error) {
+              vscode.window.showErrorMessage(`复制失败: ${error}`);
+            }
+          }
+          break;
+        }
         case "getDirectoryContent": {
           const dirPath = data.path || "";
           try {
@@ -356,57 +380,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
           break;
         }
-        case "selectImage": {
+        case "selectFile": {
           const uris = await vscode.window.showOpenDialog({
             canSelectFiles: true,
             canSelectFolders: false,
             canSelectMany: false,
           });
           if (uris && uris.length > 0) {
-            // We need to pass a path that the webview can display or reference
-            // For now, just the relative path if in workspace, or absolute?
-            // User wants to insert it as a tag.
             const uri = uris[0];
-            const wsFolder = vscode.workspace.getWorkspaceFolder(uri);
-            let label = path.basename(uri.fsPath);
-            let value = uri.fsPath;
-            if (wsFolder) {
-              value = vscode.workspace.asRelativePath(uri, false);
-            }
             webviewView.webview.postMessage({
               type: "imageSelected",
-              path: value.replace(/\\/g, "/"),
-              label: label,
+              path: uri.fsPath.replace(/\\/g, "/"),
+              label: path.basename(uri.fsPath),
             });
           }
           break;
         }
         case "tagClicked": {
           const item = data.item;
-          const tagType = item?.type ?? "mention";
+          const tagType = item?.type;
           if (tagType === "file") {
-            const value: string | undefined = item?.value;
-            const wsFolders = vscode.workspace.workspaceFolders;
-            let absolutePath = value || "";
-            if (
-              value &&
-              wsFolders &&
-              wsFolders.length > 0 &&
-              !path.isAbsolute(value)
-            ) {
-              absolutePath = path.join(wsFolders[0].uri.fsPath, value);
-            }
             const from = data.from;
             if (from) {
               const [ip, port, username] = from.split("|");
               this._chatFileService.download(
-                { ip, port: parseInt(port), username, path: absolutePath },
+                { ip, port: parseInt(port), username, path: item.value },
                 this._messageService,
               );
             }
-          } else {
-            const label = item?.label ?? item?.value ?? "";
-            vscode.window.showInformationMessage(label);
           }
           break;
         }

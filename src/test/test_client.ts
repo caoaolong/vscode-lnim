@@ -2,21 +2,19 @@ import * as net from "net";
 import * as readline from "readline";
 import * as fs from "fs";
 import * as path from "path";
+import { FileChunkTransform } from "../file_chunk_transform";
 
 /**
- * TCP消息类型定义
+ * TCP消息类型定义（与ChatMessage保持一致）
  */
-interface TcpMessage {
-  type: "chat" | "link" | "file_meta" | "file_data" | "file_complete" | "heartbeat";
+interface ChatMessage {
+  type: "chat" | "link" | "chunk" | "file_received" | "file";
   from: string;
   timestamp: number;
   value?: string;
-  isReply?: boolean;
-  fileName?: string;
-  fileSize?: number;
-  sessionId?: string;
-  data?: string;
-  offset?: number;
+  target?: string[];
+  files?: string[];
+  unique?: string;
 }
 
 /**
@@ -30,6 +28,8 @@ class TcpTestClient {
   private connected: boolean = false;
   private rl: readline.Interface;
   private receiveBuffer: Buffer = Buffer.alloc(0);
+  // 文件发送会话：key为文件路径，value为unique ID
+  private fileSendSessions: Map<string, string> = new Map();
 
   constructor(serverIp: string = "127.0.0.1", serverPort: number = 18080) {
     this.serverIp = serverIp;
@@ -66,7 +66,11 @@ class TcpTestClient {
     return new Promise((resolve, reject) => {
       console.log(`[连接] 正在连接到 ${this.serverIp}:${this.serverPort}...`);
 
-      this.client = net.connect(this.serverPort, this.serverIp, () => {
+      this.client = net.connect({
+        host: this.serverIp,
+        port: this.serverPort,
+        localPort: 62289,
+      }, () => {
         this.connected = true;
         console.log(`[连接] ✅ 已连接到服务器 ${this.serverIp}:${this.serverPort}\n`);
         this.showHelp();
@@ -90,53 +94,44 @@ class TcpTestClient {
    * 处理接收到的数据
    */
   private handleData(chunk: Buffer): void {
-    this.receiveBuffer = Buffer.concat([this.receiveBuffer, chunk]);
-
-    // 尝试解析消息（以\n分隔）
-    let newlineIndex: number;
-    while ((newlineIndex = this.receiveBuffer.indexOf("\n")) !== -1) {
-      const messageData = this.receiveBuffer.slice(0, newlineIndex);
-      this.receiveBuffer = this.receiveBuffer.slice(newlineIndex + 1);
-
-      try {
-        const message = JSON.parse(messageData.toString("utf8")) as TcpMessage;
-        this.handleMessage(message);
-      } catch (error) {
-        console.error(`[错误] 解析消息失败:`, error);
-      }
+    try {
+      this.handleMessage(JSON.parse(chunk.toString("utf8")) as ChatMessage);
+    } catch (error) {
+      console.error(`[错误] 解析消息失败:`, error);
     }
   }
 
   /**
    * 处理接收到的消息
    */
-  private handleMessage(msg: TcpMessage): void {
+  private handleMessage(msg: ChatMessage): void {
     const timestamp = new Date(msg.timestamp).toLocaleTimeString();
 
     switch (msg.type) {
       case "link":
-        console.log(`\n[${timestamp}] 📡 收到Link消息 - isReply: ${msg.isReply}, from: ${msg.from}`);
+        console.log(`\n[${timestamp}] 📡 收到Link消息 - from: ${msg.from}`);
         break;
 
       case "chat":
         console.log(`\n[${timestamp}] 💬 收到聊天消息: ${msg.value}`);
         break;
 
-      case "heartbeat":
-        // 静默处理心跳
-        // console.log(`[${timestamp}] ❤️ 收到心跳`);
+      case "file":
+        console.log(`\n[${timestamp}] 📁 收到文件消息 - file: ${msg.value}, ID: ${msg.unique}`);
+        if (msg.value && msg.unique) {
+          // 记录文件请求，确保同一个文件的ID保持一致
+          this.fileSendSessions.set(msg.value, msg.unique);
+          // 触发文件发送
+          this.handleFileRequest(msg.value, msg.unique);
+        }
         break;
 
-      case "file_meta":
-        console.log(`\n[${timestamp}] 📁 收到文件元数据 - 文件: ${msg.fileName}, 大小: ${msg.fileSize} bytes`);
+      case "chunk":
+        console.log(`\n[${timestamp}] 📦 收到文件块 - value: ${msg.value}`);
         break;
 
-      case "file_data":
-        console.log(`\n[${timestamp}] 📦 收到文件数据 - offset: ${msg.offset}`);
-        break;
-
-      case "file_complete":
-        console.log(`\n[${timestamp}] ✅ 文件传输完成 - sessionId: ${msg.sessionId}`);
+      case "file_received":
+        console.log(`\n[${timestamp}] ✅ 文件接收确认 - value: ${msg.value}`);
         break;
 
       default:
@@ -162,7 +157,7 @@ class TcpTestClient {
    */
   private handleError(err: Error): void {
     console.error(`\n[错误] TCP连接错误: ${err.message}`);
-    
+
     if (!this.connected) {
       console.error("[错误] 无法连接到服务器，请检查：");
       console.error("  1. 服务器是否已启动");
@@ -176,7 +171,7 @@ class TcpTestClient {
   /**
    * 发送消息
    */
-  private sendMessage(msg: TcpMessage): void {
+  private sendMessage(msg: ChatMessage): void {
     if (!this.connected || !this.client) {
       console.error("[错误] 未连接到服务器");
       return;
@@ -194,11 +189,10 @@ class TcpTestClient {
    * 发送Link消息
    */
   private sendLink(): void {
-    const msg: TcpMessage = {
+    const msg: ChatMessage = {
       type: "link",
       from: this.clientId,
       timestamp: Date.now(),
-      isReply: false,
     };
 
     this.sendMessage(msg);
@@ -209,7 +203,7 @@ class TcpTestClient {
    * 发送聊天消息
    */
   private sendChat(message: string): void {
-    const msg: TcpMessage = {
+    const msg: ChatMessage = {
       type: "chat",
       from: this.clientId,
       timestamp: Date.now(),
@@ -221,7 +215,59 @@ class TcpTestClient {
   }
 
   /**
-   * 发送文件
+   * 处理文件请求（收到file类型消息后自动发送文件）
+   */
+  private async handleFileRequest(filePath: string, uniqueId: string): Promise<void> {
+    // 获取当前socket
+    const socket = this.client;
+    if (!socket || !this.connected) {
+      console.error(`[错误] 未连接到服务器，无法发送文件`);
+      return;
+    }
+
+    if (!fs.existsSync(filePath)) {
+      console.error(`[错误] 文件不存在: ${filePath}`);
+      return;
+    }
+
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile()) {
+      console.error(`[错误] 不是文件: ${filePath}`);
+      return;
+    }
+
+    const fileName = path.basename(filePath);
+    const fileSize = stat.size;
+
+    console.log(`[文件请求] 📤 开始发送文件: ${fileName} (${fileSize} bytes), ID: ${uniqueId}`);
+
+    // 发送文件原数据
+    socket.write(JSON.stringify({
+      type: "fstats",
+      from: this.clientId,
+      timestamp: Date.now(),
+      value: fileSize.toString(),
+      unique: uniqueId,
+    }));
+
+    // 发送文件
+    return await new Promise<void>((resolve) => {
+      const rs = fs.createReadStream(filePath);
+      rs.on("end", () => {
+        console.log(`[文件请求] ✅ 文件发送完成: ${fileName}`);
+        // 清理会话
+        this.fileSendSessions.delete(filePath);
+        // 返回
+        resolve();
+      })
+      rs.pipe(new FileChunkTransform(uniqueId)).pipe(socket, {
+        end: false,
+      });
+    })
+  }
+
+  /**
+   * 发送文件（手动命令）
    */
   private async sendFile(filePath: string): Promise<void> {
     if (!fs.existsSync(filePath)) {
@@ -237,67 +283,20 @@ class TcpTestClient {
 
     const fileName = path.basename(filePath);
     const fileSize = stat.size;
-    const sessionId = `${this.clientId}_${Date.now()}`;
 
     console.log(`[文件] 📤 准备发送文件: ${fileName} (${fileSize} bytes)`);
 
-    // 1. 发送文件元数据
-    const metaMsg: TcpMessage = {
-      type: "file_meta",
+    // 发送文件消息（使用ChatMessage的file类型）
+    const fileMsg: ChatMessage = {
+      type: "chat",
       from: this.clientId,
       timestamp: Date.now(),
-      fileName: filePath,
-      fileSize,
-      sessionId,
+      value: `这是一个文件 {#${filePath}}`,
+      files: [filePath],
     };
-    this.sendMessage(metaMsg);
 
-    // 2. 读取并发送文件数据
-    const fd = fs.openSync(filePath, "r");
-    const chunkSize = 64 * 1024; // 64KB per chunk
-    let offset = 0;
-
-    try {
-      while (offset < fileSize) {
-        const buffer = Buffer.alloc(chunkSize);
-        const bytesRead = fs.readSync(fd, buffer, 0, chunkSize, offset);
-
-        const dataMsg: TcpMessage = {
-          type: "file_data",
-          from: this.clientId,
-          timestamp: Date.now(),
-          sessionId,
-          data: buffer.subarray(0, bytesRead).toString("base64"),
-          offset,
-        };
-
-        this.sendMessage(dataMsg);
-
-        offset += bytesRead;
-        const progress = ((offset / fileSize) * 100).toFixed(2);
-        process.stdout.write(`\r[文件] 发送进度: ${progress}%`);
-
-        // 小延迟，避免发送过快
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
-
-      console.log(); // 换行
-
-      // 3. 发送完成消息
-      const completeMsg: TcpMessage = {
-        type: "file_complete",
-        from: this.clientId,
-        timestamp: Date.now(),
-        sessionId,
-      };
-      this.sendMessage(completeMsg);
-
-      fs.closeSync(fd);
-      console.log(`[文件] ✅ 文件发送完成: ${fileName}`);
-    } catch (error) {
-      fs.closeSync(fd);
-      console.error(`[错误] 文件发送失败:`, error);
-    }
+    this.sendMessage(fileMsg);
+    console.log(`[文件] ✅ 文件消息已发送: ${fileName}`);
   }
 
   /**
