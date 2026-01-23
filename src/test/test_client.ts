@@ -34,7 +34,9 @@ class TcpTestClient {
   constructor(serverIp: string = "127.0.0.1", serverPort: number = 18080) {
     this.serverIp = serverIp;
     this.serverPort = serverPort;
-    this.clientId = Buffer.from(`测试客户端-${serverIp}:${serverPort + 1}`).toString("base64");
+    this.clientId = Buffer.from(
+      `测试客户端-${serverIp}:${serverPort + 1}`,
+    ).toString("base64");
 
     // 创建命令行交互界面
     this.rl = readline.createInterface({
@@ -66,16 +68,21 @@ class TcpTestClient {
     return new Promise((resolve, reject) => {
       console.log(`[连接] 正在连接到 ${this.serverIp}:${this.serverPort}...`);
 
-      this.client = net.connect({
-        host: this.serverIp,
-        port: this.serverPort,
-        localPort: 62289,
-      }, () => {
-        this.connected = true;
-        console.log(`[连接] ✅ 已连接到服务器 ${this.serverIp}:${this.serverPort}\n`);
-        this.showHelp();
-        resolve();
-      });
+      this.client = net.connect(
+        {
+          host: this.serverIp,
+          port: this.serverPort,
+          localPort: 62289,
+        },
+        () => {
+          this.connected = true;
+          console.log(
+            `[连接] ✅ 已连接到服务器 ${this.serverIp}:${this.serverPort}\n`,
+          );
+          this.showHelp();
+          resolve();
+        },
+      );
 
       this.client.on("data", (data) => this.handleData(data));
       this.client.on("end", () => this.handleDisconnect());
@@ -117,7 +124,9 @@ class TcpTestClient {
         break;
 
       case "file":
-        console.log(`\n[${timestamp}] 📁 收到文件消息 - file: ${msg.value}, ID: ${msg.unique}`);
+        console.log(
+          `\n[${timestamp}] 📁 收到文件消息 - file: ${msg.value}, ID: ${msg.unique}`,
+        );
         if (msg.value && msg.unique) {
           // 记录文件请求，确保同一个文件的ID保持一致
           this.fileSendSessions.set(msg.value, msg.unique);
@@ -217,7 +226,10 @@ class TcpTestClient {
   /**
    * 处理文件请求（收到file类型消息后自动发送文件）
    */
-  private async handleFileRequest(filePath: string, uniqueId: string): Promise<void> {
+  private async handleFileRequest(
+    filePath: string,
+    uniqueId: string,
+  ): Promise<void> {
     // 获取当前socket
     const socket = this.client;
     if (!socket || !this.connected) {
@@ -239,16 +251,20 @@ class TcpTestClient {
     const fileName = path.basename(filePath);
     const fileSize = stat.size;
 
-    console.log(`[文件请求] 📤 开始发送文件: ${fileName} (${fileSize} bytes), ID: ${uniqueId}`);
+    console.log(
+      `[文件请求] 📤 开始发送文件: ${fileName} (${fileSize} bytes), ID: ${uniqueId}`,
+    );
 
     // 发送文件原数据
-    socket.write(JSON.stringify({
-      type: "fstats",
-      from: this.clientId,
-      timestamp: Date.now(),
-      value: fileSize.toString(),
-      unique: uniqueId,
-    }));
+    socket.write(
+      JSON.stringify({
+        type: "fstats",
+        from: this.clientId,
+        timestamp: Date.now(),
+        value: fileSize.toString(),
+        unique: uniqueId,
+      }),
+    );
 
     // 发送文件
     return await new Promise<void>((resolve) => {
@@ -259,11 +275,11 @@ class TcpTestClient {
         this.fileSendSessions.delete(filePath);
         // 返回
         resolve();
-      })
+      });
       rs.pipe(new FileChunkTransform(uniqueId)).pipe(socket, {
         end: false,
       });
-    })
+    });
   }
 
   /**
@@ -405,4 +421,3 @@ async function main() {
 
 // 运行
 main();
-

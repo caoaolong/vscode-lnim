@@ -566,7 +566,9 @@ function renderMessageContent(container, text, from, files) {
   
   // 辅助函数：获取文件信息
   function getFileInfo(filePath) {
-    if (!filePath) return null;
+    if (!filePath) {
+			return null;
+		}
     const label = filePath.split(/[\/\\]/).pop();
     return { type: "file", label };
   }
@@ -576,7 +578,9 @@ function renderMessageContent(container, text, from, files) {
   const fileInfoMap = new Map();
   if (files && Array.isArray(files) && files.length > 0) {
     files.forEach((filePath) => {
-      if (!filePath) return;
+      if (!filePath) {
+				return;
+			}
       filesSet.add(filePath);
       fileInfoMap.set(filePath, getFileInfo(filePath));
     });
