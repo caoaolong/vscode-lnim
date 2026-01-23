@@ -1,7 +1,9 @@
 import * as fs from "fs";
-import { ChatFileChunk, ChatMessage, ChatMessageService } from "./chat_message_service";
+import { ChatMessage, ChatMessageService } from "./chat_message_service";
 import * as path from "path";
 import * as vscode from "vscode";
+
+const MAX_BUFFER_SIZE = 1024 * 1024; // 1MB
 
 export interface ChatFileMetadata {
   ip: string;
@@ -25,33 +27,14 @@ interface FileSession {
   sessionId: string;
   size: number;
   received: number;
-  progressReport?: (value: { message?: string; increment?: number }) => void;
   fileName?: string;
+  buffer: Buffer;
 }
 
 export class ChatFileService {
   // 优化chunk大小以适应MTU限制，避免IP分片
   private readonly chunkSize: number = 256;
   private fds: Map<string, FileSession> = new Map();
-
-  // 存储文件下载进度
-  private activeDownloads = new Map<string, {
-    resolve: () => void;
-    report: (value: { message?: string; increment?: number }) => void;
-    lastPercentage: number;
-    receivedChunks: Set<number>;
-    totalChunks: number;
-    sessionId: string;
-    senderIp: string;
-    senderPort: number;
-    filePath: string;
-    originalFilePath: string;
-    originalFileName: string;
-    buffer: Buffer; // 内存缓冲区，用于批量写入
-    pendingWrites: Map<number, Buffer>; // 待写入的chunk
-    lastFlushTime: number; // 上次刷新时间
-    flushTimer?: NodeJS.Timeout; // 刷新定时器
-  }>();
 
   rootPath: string;
   private messageServiceRef?: ChatMessageService;
@@ -71,30 +54,11 @@ export class ChatFileService {
       if (session) {
         session.size = parseInt(msg.value);
         console.log(`[updateSession] 文件大小信息已收到: ${session.size}`);
-        // 更新进度条显示（文件大小信息已收到）
-        if (session.progressReport) {
-          const percentage = session.size > 0 
-            ? Math.min(100, Math.round((session.received / session.size) * 100))
-            : 0;
-          const receivedMB = (session.received / (1024 * 1024)).toFixed(2);
-          const totalMB = (session.size / (1024 * 1024)).toFixed(2);
-          const fileName = session.fileName || "文件";
-          session.progressReport({
-            message: `${fileName}: ${percentage}% (${receivedMB}MB / ${totalMB}MB)`,
-          });
-        }
       }
     }
   }
 
   public dispose(): void {
-    // 清理所有定时器
-    for (const [, session] of this.activeDownloads.entries()) {
-      if (session.flushTimer) {
-        clearTimeout(session.flushTimer);
-      }
-    }
-
     // 关闭所有文件句柄
     for (const [filePath, session] of this.fds.entries()) {
       try {
@@ -288,37 +252,16 @@ export class ChatFileService {
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
     fs.writeFileSync(targetPath, "");
     const sessionId = messageService.sendFileRequest(file);
-    
-    // 启动进度条
-    vscode.window.withProgress(
-      {
-        location: vscode.ProgressLocation.Notification,
-        title: `正在接收文件: ${filename}`,
-        cancellable: false,
-      },
-      async (progress) => {
-        // 创建会话并保存进度报告函数
-        const session: FileSession = {
-          fd: fs.openSync(targetPath, "r+"),
-          sessionId: sessionId,
-          size: 0,
-          received: 0,
-          progressReport: (value) => progress.report(value),
-          fileName: filename,
-        };
-        this.fds.set(sessionId, session);
-        
-        // 等待文件传输完成（通过检查session是否还存在）
-        return new Promise<void>((resolve) => {
-          const checkInterval = setInterval(() => {
-            if (!this.fds.has(sessionId)) {
-              clearInterval(checkInterval);
-              resolve();
-            }
-          }, 100);
-        });
-      }
-    );
+    // 创建会话并保存进度报告函数
+    const session: FileSession = {
+      fd: fs.openSync(targetPath, "r+"),
+      sessionId: sessionId,
+      size: 0,
+      received: 0,
+      fileName: filename,
+      buffer: Buffer.alloc(MAX_BUFFER_SIZE),
+    };
+    this.fds.set(sessionId, session);
   }
 
   /**
@@ -329,79 +272,12 @@ export class ChatFileService {
       console.warn(`[saveChunk] 会话不存在: ${sessionId}`);
       return;
     }
-    
+
     const session = this.fds.get(sessionId);
     if (!session) {
       return;
     }
 
-    try {
-      // 将数据写入文件（从当前已接收位置开始）
-      const bytesWritten = fs.writeSync(session.fd, data, 0, data.length, session.received);
-      
-      // 更新已接收字节数
-      session.received += bytesWritten;
-      
-      // 计算传输进度
-      let percentage = 0;
-      if (session.size > 0) {
-        percentage = Math.min(100, Math.round((session.received / session.size) * 100));
-      }
-      
-      // 使用VSCode进度条显示传输进度
-      if (session.progressReport) {
-        const receivedMB = (session.received / (1024 * 1024)).toFixed(2);
-        const totalMB = session.size > 0 ? (session.size / (1024 * 1024)).toFixed(2) : "?";
-        const fileName = session.fileName || "文件";
-        const message = session.size > 0 
-          ? `${fileName}: ${percentage}% (${receivedMB}MB / ${totalMB}MB)`
-          : `${fileName}: ${receivedMB}MB (等待文件大小信息...)`;
-        
-        session.progressReport({
-          message: message,
-          increment: 0, // 手动计算百分比，不使用increment
-        });
-      }
-      
-      // 检查是否接收完成
-      if (session.size > 0 && session.received >= session.size) {
-        // 显示完成消息
-        if (session.progressReport) {
-          const fileName = session.fileName || "文件";
-          session.progressReport({
-            message: `${fileName}: 接收完成 (${(session.size / (1024 * 1024)).toFixed(2)}MB)`,
-          });
-        }
-        
-        // 关闭文件句柄
-        fs.closeSync(session.fd);
-        
-        // 清理会话（这会触发进度条的Promise resolve）
-        this.fds.delete(sessionId);
-        
-        // 通知UI更新文件列表（如果有messageServiceRef）
-        if (this.messageServiceRef) {
-          this.messageServiceRef.notifyFilesUpdated(this.getFiles());
-        }
-      }
-    } catch (error) {
-      console.error(`[saveChunk] 写入文件失败 - 会话ID: ${sessionId}:`, error);
-      
-      // 显示错误消息
-      if (session.progressReport) {
-        const fileName = session.fileName || "文件";
-        session.progressReport({
-          message: `${fileName}: 接收失败 - ${error instanceof Error ? error.message : String(error)}`,
-        });
-      }
-      
-      // 发生错误时清理会话
-      try {
-        fs.closeSync(session.fd);
-      } catch (closeError) {
-        // 忽略关闭错误
-      }
-      this.fds.delete(sessionId);
-    }
+    // TODO: 写入缓冲区
   }
 }
