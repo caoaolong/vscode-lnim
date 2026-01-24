@@ -20,7 +20,6 @@ export interface ReceivedFile {
   size: number;
   sender: string;
   ip: string;
-  port: number;
   completed: boolean; // 新增：标记文件是否接收完成
 }
 
@@ -38,15 +37,10 @@ export class ChatFileService {
   private fds: Map<string, FileSession> = new Map();
 
   rootPath: string;
-  private messageServiceRef?: ChatMessageService;
 
   constructor(rootPath: string) {
     this.rootPath = rootPath;
     fs.mkdirSync(`${this.rootPath}/files`, { recursive: true });
-  }
-
-  public setMessageService(messageService: ChatMessageService): void {
-    this.messageServiceRef = messageService;
   }
 
   public createSession(msg: ChatMessage) {
@@ -125,37 +119,26 @@ export class ChatFileService {
    */
   public getFiles(): ReceivedFile[] {
     const files: ReceivedFile[] = [];
-
+    console.log(`[ChatFileService] 扫描接收文件目录: ${this.rootPath}`);
     if (!fs.existsSync(this.rootPath)) {
       return files;
     }
 
     try {
-      // 扫描根目录下的所有目录（格式为 ${ip}_${port}）
+      // 扫描根目录下的所有目录（格式为 ${ip}）
       const entries = fs.readdirSync(this.rootPath, { withFileTypes: true });
-
       for (const entry of entries) {
         if (!entry.isDirectory()) {
           continue;
         }
-
-        // 解析目录名，提取 IP 和端口
-        const dirMatch = entry.name.match(/^(.+)_(\d+)$/);
-        if (!dirMatch) {
-          continue;
-        }
-
-        const [, ip, portStr] = dirMatch;
-        const port = parseInt(portStr, 10);
-        const dirPath = path.join(this.rootPath, entry.name);
-
+        const ip = entry.name;
+        const dirPath = path.join(this.rootPath, ip);
         // 递归扫描目录下的所有文件
-        this.scanDirectoryForFiles(dirPath, ip, port, files);
+        this.scanDirectoryForFiles(dirPath, ip, files);
       }
     } catch (error) {
       console.error("获取文件列表失败:", error);
     }
-
     return files;
   }
 
@@ -165,7 +148,6 @@ export class ChatFileService {
   private scanDirectoryForFiles(
     dirPath: string,
     ip: string,
-    port: number,
     files: ReceivedFile[],
   ): void {
     try {
@@ -175,11 +157,11 @@ export class ChatFileService {
         const fullPath = path.join(dirPath, entry.name);
 
         if (entry.isDirectory()) {
-          this.scanDirectoryForFiles(fullPath, ip, port, files);
+          this.scanDirectoryForFiles(fullPath, ip, files);
         } else if (entry.isFile()) {
           const stats = fs.statSync(fullPath);
           const relativePath = path.relative(
-            path.join(this.rootPath, `${ip}_${port}`),
+            path.join(this.rootPath, ip),
             fullPath,
           );
 
@@ -187,9 +169,8 @@ export class ChatFileService {
             path: fullPath,
             name: entry.name,
             size: stats.size,
-            sender: `${ip}:${port}`,
+            sender: ip,
             ip,
-            port,
             completed: true, // 简化：假设已下载的文件都是完整的
           });
         }

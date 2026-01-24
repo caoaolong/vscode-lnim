@@ -50,8 +50,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       fileService: this._chatFileService,
       settings: this._userSettings,
     });
-    // 设置messageService引用，用于文件传输进度通知
-    this._chatFileService.setMessageService(this._messageService);
   }
 
   public resolveWebviewView(
@@ -145,9 +143,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           // 尝试从联系人中获取用户名
           const contacts = ChatContactManager.getContacts();
           const filesWithUsername = files.map((file) => {
-            const contact = contacts.find(
-              (c) => c.ip === file.ip && c.port === file.port,
-            );
+            const contact = contacts.find((c) => c.ip === file.ip);
             return {
               ...file,
               sender: contact?.username || file.sender,
@@ -175,9 +171,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             const files = this._chatFileService.getFiles();
             const contacts = ChatContactManager.getContacts();
             const filesWithUsername = files.map((f) => {
-              const contact = contacts.find(
-                (c) => c.ip === f.ip && c.port === f.port,
-              );
+              const contact = contacts.find((c) => c.ip === f.ip);
               return {
                 ...f,
                 sender: contact?.username || f.sender,
