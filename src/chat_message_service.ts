@@ -12,15 +12,8 @@ export interface ChatUserSettings {
   port: number;
 }
 
-export interface ChatFileChunk {
-  index: number;
-  size: number;
-  data: Buffer;
-  total?: number;
-}
-
 export interface ChatMessage {
-  type: "chat" | "link" | "chunk" | "file_received" | "file" | "fstats";
+  type: "chat" | "link" | "file" | "fstats" | "fend";
   from: string;
   timestamp: number;
   // type=chat时，表示消息内容
@@ -32,6 +25,8 @@ export interface ChatMessage {
   unique?: string;
   // 文件数据块
   data?: Buffer;
+  // 文件句柄
+  fd?: number;
 }
 
 export interface ChatMessageServiceOptions {
@@ -43,7 +38,6 @@ export interface ChatMessageServiceOptions {
 }
 
 export class ChatMessageService {
-
   public isServerRunning: boolean = false;
 
   private tcpServer?: net.Server;
@@ -80,7 +74,9 @@ export class ChatMessageService {
   }
 
   public selfId(): string {
-    return Buffer.from(`${this.settings.nickname}-${Date.now()}`).toString("base64");
+    return Buffer.from(`${this.settings.nickname}-${Date.now()}`).toString(
+      "base64",
+    );
   }
 
   public dispose(): void {
@@ -117,7 +113,7 @@ export class ChatMessageService {
     if (this.tcpServer) {
       try {
         this.tcpServer.close();
-      } catch { }
+      } catch {}
       this.tcpServer = undefined;
     }
     this.currentPort = port || this.defaultPort;
@@ -143,17 +139,21 @@ export class ChatMessageService {
   /**
    * 请求下载文件（发送chunk请求）
    */
-  public sendFileRequest(file: ChatFileMetadata): string {
+  public sendFileRequest(file: ChatFileMetadata) {
     // 生成16字节（16个字符）的随机字符串
     const uuid = crypto.randomBytes(8).toString("hex");
-    this.sendMessage({
-      type: "file",
-      from: this.selfId(),
-      timestamp: Date.now(),
-      value: file.path,
-      unique: uuid,
-    }, file.ip, file.port);
-    return uuid;
+    this.sendMessage(
+      {
+        type: "file",
+        from: this.selfId(),
+        timestamp: Date.now(),
+        value: file.path,
+        unique: uuid,
+        fd: file.fd,
+      },
+      file.ip,
+      file.port,
+    );
   }
 
   public sendChatMessage(message: ChatMessage) {
@@ -218,9 +218,7 @@ export class ChatMessageService {
     //   contact.port && contact.port > 0 && contact.port <= 65535
     //     ? contact.port
     //     : this.defaultPort;
-
     // const fromId = this.getSelfId ? this.getSelfId() : "";
-
     // this.sendMessage(
     //   {
     //     type: "link",
@@ -246,11 +244,9 @@ export class ChatMessageService {
     //   console.error(`[sendFileReceivedConfirm] getSelfId为空`);
     //   return;
     // }
-
     // console.log(
     //   `[sendFileReceivedConfirm] 发送文件接收完成确认 - sessionId: ${sessionId}, to: ${ip}:${port}`,
     // );
-
     // this.sendMessage(
     //   {
     //     type: "file_received",
@@ -262,7 +258,6 @@ export class ChatMessageService {
     //   ip,
     //   port,
     // );
-
     // console.log(`[sendFileReceivedConfirm] 确认消息已发送`);
   }
 
@@ -325,12 +320,10 @@ export class ChatMessageService {
   }
 
   private handleDataMessage(socket: net.Socket, msg: ChatMessage) {
-    if (msg.type === "chunk") {
-      this.handleChunkMessage(msg);
-    } else if (msg.type === "file_received") {
+    if (msg.type === "fend") {
       this.handleFileReceived(msg);
     } else if (msg.type === "fstats") {
-      this.handleStatsMessage(socket, msg);
+      this.handleStatsMessage(msg);
     } else if (msg.type === "link") {
       if (socket.remoteAddress && socket.remotePort) {
         ChatContactManager.handleLinkMessage({
@@ -352,8 +345,9 @@ export class ChatMessageService {
       console.log(msg);
     }
   }
-  handleStatsMessage(socket: net.Socket, msg: ChatMessage) {
-    this.fileService.updateSession(msg);
+
+  handleStatsMessage(msg: ChatMessage) {
+    this.fileService.createSession(msg);
   }
 
   private handleOfflineMessage(socket: net.Socket) {
@@ -377,96 +371,14 @@ export class ChatMessageService {
   }
 
   /**
-   * 处理chunk消息
-   */
-  private async handleChunkMessage(payload: ChatMessage) {
-    // const data = payload as ChatMessage;
-    // // 如果有chunk数据，说明是发送chunk
-    // if (data.chunk && typeof data.chunk.index === 'number') {
-    //   console.log(`[handleChunkMessage] 收到chunk - index: ${data.chunk.index}, size: ${data.chunk.size}, total: ${data.chunk.total}, sessionId: ${data.sessionId}`);
-    //   this.fileService.saveChunk(data.value, data.chunk, rinfo.address, rinfo.port, data.sessionId);
-    //   return;
-    // }
-    // // 否则是请求chunk（文件下载请求）
-    // const filePath = typeof data.value === "string" ? data.value : "";
-    // const requestChunks = data.requestChunks;
-    // console.log(`[handleChunkMessage] 收到chunk请求 - filePath: ${filePath}, requestChunks: ${requestChunks ? requestChunks.length : 'all'}`);
-    // if (!filePath) {
-    //   console.error("收到chunk请求，但文件路径为空");
-    //   return;
-    // }
-    // if (!fs.existsSync(filePath)) {
-    //   console.error(`收到chunk请求，但文件不存在: ${filePath}`);
-    //   return;
-    // }
-    // try {
-    //   const stat = fs.statSync(filePath);
-    //   if (!stat.isFile()) {
-    //     console.error(`路径不是文件: ${filePath}`);
-    //     return;
-    //   }
-    //   const chunkCount = Math.ceil(stat.size / this.chunkSize);
-    //   const fd = fs.openSync(filePath, "r");
-    //   // 创建或查找发送会话
-    //   const sessionId = data.sessionId || `${rinfo.address}_${rinfo.port}_${filePath}_${Date.now()}`;
-    //   console.log(`[handleChunkMessage] 准备发送文件 - sessionId: ${sessionId}, chunkCount: ${chunkCount}, fileSize: ${stat.size}`);
-    //   let session = this.fileSendSessions.get(sessionId);
-    //   if (!session) {
-    //     session = {
-    //       filePath,
-    //       fd,
-    //       chunkCount,
-    //       targetIp: rinfo.address,
-    //       targetPort: rinfo.port,
-    //     };
-    //     this.fileSendSessions.set(sessionId, session);
-    //     console.log(`[handleChunkMessage] 创建新的发送会话: ${sessionId}`);
-    //   } else {
-    //     console.log(`[handleChunkMessage] 使用现有发送会话: ${sessionId}`);
-    //   }
-    //   // 确定要发送的chunk列表
-    //   const chunksToSend = requestChunks || Array.from({ length: chunkCount }, (_, i) => i);
-    //   console.log(`[handleChunkMessage] 将发送 ${chunksToSend.length} 个chunk`);
-    //   // 异步发送chunk，避免UDP缓冲区溢出
-    //   this.sendChunksWithDelay(fd, filePath, sessionId, chunksToSend, chunkCount, rinfo.address, rinfo.port);
-    //   if (!requestChunks) {
-    //     vscode.window.showInformationMessage(
-    //       `正在向 ${rinfo.address}:${rinfo.port} 发送文件: ${filePath.split('/').pop()} (${chunkCount} 块)`
-    //     );
-    //   }
-    // } catch (error) {
-    //   console.error("处理chunk请求时出错:", error);
-    // }
-  }
-
-  /**
    * 处理文件接收完成确认
    */
-  private handleFileReceived(payload: ChatMessage) {
-    // const msg = payload as ChatMessage;
-    // console.log(`[handleFileReceived] 收到文件接收完成确认 - sessionId: ${msg.sessionId}, from: ${rinfo.address}:${rinfo.port}`);
-    // if (!msg.sessionId) {
-    //   console.error(`[handleFileReceived] sessionId为空`);
-    //   return;
-    // }
-    // // 清理发送会话
-    // const session = this.fileSendSessions.get(msg.sessionId);
-    // if (session) {
-    //   console.log(`[handleFileReceived] 找到发送会话，准备清理 - sessionId: ${msg.sessionId}, filePath: ${session.filePath}`);
-    //   try {
-    //     fs.closeSync(session.fd);
-    //     console.log(`[handleFileReceived] 文件句柄已关闭`);
-    //   } catch (error) {
-    //     console.error('[handleFileReceived] 关闭文件句柄失败:', error);
-    //   }
-    //   this.fileSendSessions.delete(msg.sessionId);
-    //   console.log(`[handleFileReceived] 发送会话已删除，剩余会话数: ${this.fileSendSessions.size}`);
-    //   vscode.window.showInformationMessage(
-    //     `文件发送完成: ${session.filePath.split('/').pop()}`
-    //   );
-    // } else {
-    //   console.warn(`[handleFileReceived] 未找到发送会话: ${msg.sessionId}`);
-    // }
+  private handleFileReceived(msg: ChatMessage) {
+    console.log(
+      `[handleFileReceived] 文件接收完成确认: FD: ${msg.fd}, sessionId: ${msg.unique}`,
+    );
+    // 保存文件
+    this.fileService.closeSession(msg);
   }
 
   private handleChatMessage(socket: net.Socket, msg: ChatMessage) {

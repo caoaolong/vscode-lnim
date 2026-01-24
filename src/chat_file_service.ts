@@ -2,6 +2,7 @@ import * as fs from "fs";
 import { ChatMessage, ChatMessageService } from "./chat_message_service";
 import * as path from "path";
 import * as vscode from "vscode";
+import { ChatFileBuffer } from "./chat_file_buffer";
 
 const MAX_BUFFER_SIZE = 1024 * 1024; // 1MB
 
@@ -10,6 +11,7 @@ export interface ChatFileMetadata {
   port: number;
   username: string;
   path: string;
+  fd?: number;
 }
 
 export interface ReceivedFile {
@@ -22,13 +24,12 @@ export interface ReceivedFile {
   completed: boolean; // 新增：标记文件是否接收完成
 }
 
-interface FileSession {
+export interface FileSession {
   fd: number;
   sessionId: string;
   size: number;
   received: number;
-  fileName?: string;
-  buffer: Buffer;
+  buffer: ChatFileBuffer;
 }
 
 export class ChatFileService {
@@ -48,14 +49,31 @@ export class ChatFileService {
     this.messageServiceRef = messageService;
   }
 
-  public updateSession(msg: ChatMessage) {
-    if (msg.unique && msg.value && this.fds.has(msg.unique)) {
-      const session = this.fds.get(msg.unique);
-      if (session) {
-        session.size = parseInt(msg.value);
-        console.log(`[updateSession] 文件大小信息已收到: ${session.size}`);
-      }
+  public createSession(msg: ChatMessage) {
+    if (!msg.fd || !msg.unique || !msg.value) {
+      return;
     }
+    const session: FileSession = {
+      fd: msg.fd,
+      sessionId: msg.unique,
+      size: parseInt(msg.value),
+      received: 0,
+      buffer: new ChatFileBuffer(msg.fd),
+    };
+    this.fds.set(msg.unique, session);
+  }
+
+  closeSession(msg: ChatMessage) {
+    if (!msg.fd || !msg.unique) {
+      return;
+    }
+    const session = this.fds.get(msg.unique);
+    if (!session) {
+      return;
+    }
+    session.buffer.flush();
+    fs.closeSync(session.fd);
+    this.fds.delete(msg.unique);
   }
 
   public dispose(): void {
@@ -77,14 +95,14 @@ export class ChatFileService {
     const winDriveMatch = filePath.match(/^[a-zA-Z]:\\/);
     if (winDriveMatch) {
       const withoutDrive = filePath.substring(3);
-      return withoutDrive.replace(/\\/g, '/');
+      return withoutDrive.replace(/\\/g, "/");
     }
 
-    if (filePath.startsWith('/')) {
+    if (filePath.startsWith("/")) {
       return filePath.substring(1);
     }
 
-    return filePath.replace(/\\/g, '/');
+    return filePath.replace(/\\/g, "/");
   }
 
   /**
@@ -148,7 +166,7 @@ export class ChatFileService {
     dirPath: string,
     ip: string,
     port: number,
-    files: ReceivedFile[]
+    files: ReceivedFile[],
   ): void {
     try {
       const entries = fs.readdirSync(dirPath, { withFileTypes: true });
@@ -162,7 +180,7 @@ export class ChatFileService {
           const stats = fs.statSync(fullPath);
           const relativePath = path.relative(
             path.join(this.rootPath, `${ip}_${port}`),
-            fullPath
+            fullPath,
           );
 
           files.push({
@@ -224,11 +242,7 @@ export class ChatFileService {
     messageService: ChatMessageService,
   ): Promise<void> {
     const safePath = this.getSafeRelativePath(file.path);
-    const targetPath = path.join(
-      this.rootPath,
-      file.ip,
-      safePath,
-    );
+    const targetPath = path.join(this.rootPath, file.ip, safePath);
     const filename = path.basename(file.path);
 
     if (fs.existsSync(targetPath) && fs.statSync(targetPath).size > 0) {
@@ -251,17 +265,8 @@ export class ChatFileService {
     // 创建文件并开始下载
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
     fs.writeFileSync(targetPath, "");
-    const sessionId = messageService.sendFileRequest(file);
-    // 创建会话并保存进度报告函数
-    const session: FileSession = {
-      fd: fs.openSync(targetPath, "r+"),
-      sessionId: sessionId,
-      size: 0,
-      received: 0,
-      fileName: filename,
-      buffer: Buffer.alloc(MAX_BUFFER_SIZE),
-    };
-    this.fds.set(sessionId, session);
+    file.fd = fs.openSync(targetPath, "r+");
+    messageService.sendFileRequest(file);
   }
 
   /**
@@ -279,5 +284,7 @@ export class ChatFileService {
     }
 
     // TODO: 写入缓冲区
+    session.buffer.write(data);
+    console.log(`[saveChunk] 写入数据: ${data.length} bytes`);
   }
 }

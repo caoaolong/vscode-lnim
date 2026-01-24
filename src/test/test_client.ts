@@ -8,13 +8,14 @@ import { FileChunkTransform } from "../file_chunk_transform";
  * TCP消息类型定义（与ChatMessage保持一致）
  */
 interface ChatMessage {
-  type: "chat" | "link" | "chunk" | "file_received" | "file";
+  type: "chat" | "link" | "chunk" | "fend" | "file";
   from: string;
   timestamp: number;
   value?: string;
   target?: string[];
   files?: string[];
   unique?: string;
+  fd?: number;
 }
 
 /**
@@ -125,13 +126,13 @@ class TcpTestClient {
 
       case "file":
         console.log(
-          `\n[${timestamp}] 📁 收到文件消息 - file: ${msg.value}, ID: ${msg.unique}`,
+          `\n[${timestamp}] 📁 收到文件消息 - file: ${msg.value}, ID: ${msg.unique}, FD: ${msg.fd}`,
         );
-        if (msg.value && msg.unique) {
+        if (msg.value && msg.unique && msg.fd) {
           // 记录文件请求，确保同一个文件的ID保持一致
           this.fileSendSessions.set(msg.value, msg.unique);
           // 触发文件发送
-          this.handleFileRequest(msg.value, msg.unique);
+          this.handleFileRequest(msg.value, msg.unique, msg.fd);
         }
         break;
 
@@ -139,8 +140,8 @@ class TcpTestClient {
         console.log(`\n[${timestamp}] 📦 收到文件块 - value: ${msg.value}`);
         break;
 
-      case "file_received":
-        console.log(`\n[${timestamp}] ✅ 文件接收确认 - value: ${msg.value}`);
+      case "fend":
+        console.log(`\n[${timestamp}] ✅ 文件发送完成 - value: ${msg.unique}`);
         break;
 
       default:
@@ -229,6 +230,7 @@ class TcpTestClient {
   private async handleFileRequest(
     filePath: string,
     uniqueId: string,
+    fd: number,
   ): Promise<void> {
     // 获取当前socket
     const socket = this.client;
@@ -255,7 +257,7 @@ class TcpTestClient {
       `[文件请求] 📤 开始发送文件: ${fileName} (${fileSize} bytes), ID: ${uniqueId}`,
     );
 
-    // 发送文件原数据
+    // 发送文件元数据
     socket.write(
       JSON.stringify({
         type: "fstats",
@@ -263,14 +265,14 @@ class TcpTestClient {
         timestamp: Date.now(),
         value: fileSize.toString(),
         unique: uniqueId,
+        fd: fd,
       }),
     );
 
     // 发送文件
-    return await new Promise<void>((resolve) => {
+    await new Promise<void>((resolve) => {
       const rs = fs.createReadStream(filePath);
       rs.on("end", () => {
-        console.log(`[文件请求] ✅ 文件发送完成: ${fileName}`);
         // 清理会话
         this.fileSendSessions.delete(filePath);
         // 返回
@@ -280,6 +282,18 @@ class TcpTestClient {
         end: false,
       });
     });
+
+    // 发送完成消息
+    socket.write(
+      JSON.stringify({
+        type: "fend",
+        from: this.clientId,
+        timestamp: Date.now(),
+        unique: uniqueId,
+        fd: fd,
+      }),
+    );
+		console.log(`\n[文件请求] ✅ 文件发送完成: FD: ${fd}`);
   }
 
   /**
