@@ -29,6 +29,19 @@ export interface FileSession {
   size: number;
   received: number;
   buffer: ChatFileBuffer;
+  task: (
+    progress: vscode.Progress<{
+      /**
+       * A progress message that represents a chunk of work
+       */
+      message?: string;
+      /**
+       * An increment for discrete progress. Increments will be summed up until 100% is reached
+       */
+      increment?: number;
+    }>,
+    token: vscode.CancellationToken,
+  ) => Thenable<void>;
 }
 
 export class ChatFileService {
@@ -53,7 +66,50 @@ export class ChatFileService {
       size: parseInt(msg.value),
       received: 0,
       buffer: new ChatFileBuffer(msg.fd),
+      task: (progress, token) => {
+        return new Promise<void>((resolve) => {
+          let lastReported = 0;
+          const timer = setInterval(() => {
+            if (token.isCancellationRequested) {
+              clearInterval(timer);
+              resolve();
+              return;
+            }
+            const received = session.received;
+            const size = session.size;
+            if (size <= 0) {
+              return; // 防御性检查
+            }
+            const percent = (received / size) * 100;
+            const increment = percent - lastReported;
+            if (increment > 0) {
+              progress.report({
+                message: `已接收 ${received} / ${size} 字节 (${percent.toFixed(1)}%)`,
+                increment,
+              });
+              lastReported = percent;
+            }
+            // 如果已经完成，自动结束进度条
+            if (received >= size) {
+              // 补齐最后的浮点误差
+              if (lastReported < 100) {
+                progress.report({ increment: 100 - lastReported });
+              }
+              clearInterval(timer);
+              resolve(); // 关闭 withProgress
+            }
+          }, 500);
+        });
+      },
     };
+    vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: "正在接收文件...",
+        cancellable: true,
+      },
+      session.task,
+    );
     this.fds.set(msg.unique, session);
   }
 
@@ -266,6 +322,7 @@ export class ChatFileService {
 
     // TODO: 写入缓冲区
     session.buffer.write(data);
+    session.received += data.length;
     console.log(`[saveChunk] 写入数据: ${data.length} bytes`);
   }
 }
