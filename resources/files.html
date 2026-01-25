@@ -1,45 +1,130 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src {{cspSource}} 'unsafe-inline'; font-src {{cspSource}}; script-src {{cspSource}} 'unsafe-inline'; connect-src https:;">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src {{cspSource}} 'unsafe-inline'; font-src {{cspSource}}; script-src {{cspSource}} 'unsafe-inline'; connect-src https:;"
+    />
     <title>Files</title>
-    <link rel="stylesheet" href="{{codiconsCssUri}}">
-    <link rel="stylesheet" href="{{chatCssUri}}">
+    <link rel="stylesheet" href="{{codiconsCssUri}}" />
+    <link rel="stylesheet" href="{{chatCssUri}}" />
     <script src="{{jqueryUri}}"></script>
     <style>
-        body { padding: 20px; }
-        #files-panel { width: 100%; max-width: 800px; margin: 0 auto; border: none; box-shadow: none; padding: 0; background: transparent; }
-        .back-header { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; border-bottom: 1px solid var(--vscode-widget-border); padding-bottom: 10px; }
-        .back-header h3 { margin: 0; }
-        .file-item { display: flex; align-items: center; gap: 12px; padding: 12px; border-bottom: 1px solid var(--vscode-widget-border); }
-        .file-item:hover { background-color: var(--vscode-list-hoverBackground); }
-        .file-icon { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; color: var(--vscode-icon-foreground); }
-        .file-info { flex-grow: 1; min-width: 0; }
-        .file-name { font-weight: 500; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .file-meta { font-size: 11px; color: var(--vscode-descriptionForeground); display: flex; flex-wrap: wrap; gap: 8px; }
-        .file-meta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .file-actions { display: flex; gap: 4px; }
-        .file-size { font-family: monospace; }
-        .empty-state { text-align: center; padding: 40px 20px; color: var(--vscode-descriptionForeground); }
-        .empty-state .codicon { font-size: 48px; margin-bottom: 12px; }
+      body {
+        padding: 20px;
+      }
+      #files-panel {
+        width: 100%;
+        max-width: 800px;
+        margin: 0 auto;
+        border: none;
+        box-shadow: none;
+        padding: 0;
+        background: transparent;
+      }
+      .back-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 20px;
+        border-bottom: 1px solid var(--vscode-widget-border);
+        padding-bottom: 10px;
+      }
+      .back-header h3 {
+        margin: 0;
+      }
+      .file-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px;
+        border-bottom: 1px solid var(--vscode-widget-border);
+      }
+      .file-item:hover {
+        background-color: var(--vscode-list-hoverBackground);
+      }
+      .file-icon {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        color: var(--vscode-icon-foreground);
+      }
+      .file-info {
+        flex-grow: 1;
+        min-width: 0;
+      }
+      .file-name {
+        font-weight: 500;
+        margin-bottom: 4px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .file-meta {
+        font-size: 11px;
+        color: var(--vscode-descriptionForeground);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .file-meta span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .file-actions {
+        display: flex;
+        gap: 4px;
+      }
+      .file-size {
+        font-family: monospace;
+      }
+      .empty-state {
+        text-align: center;
+        padding: 40px 20px;
+        color: var(--vscode-descriptionForeground);
+      }
+      .empty-state .codicon {
+        font-size: 48px;
+        margin-bottom: 12px;
+      }
+      .tooltip {
+        position: absolute;
+        display: none;
+        padding: 6px 10px;
+        background: rgba(0, 0, 0, 0.75);
+        color: #fff;
+        font-size: 12px;
+        border-radius: 4px;
+        white-space: nowrap;
+        z-index: 1000;
+
+        max-width: 400px;
+        white-space: normal; /* 允许换行（关键） */
+        word-break: break-word; /* 长单词强制断行 */
+        word-wrap: break-word; /* 兼容旧浏览器 */
+        line-height: 1.4;
+      }
     </style>
-</head>
-<body>
+  </head>
+  <body>
     <div id="files-panel">
-        <div class="back-header">
-            <button class="icon-btn" id="back-btn" title="Back">
-                <span class="codicon codicon-arrow-left"></span>
-            </button>
-            <h3>文件管理</h3>
-        </div>
+      <div class="back-header">
+        <button class="icon-btn" id="back-btn" title="Back">
+          <span class="codicon codicon-arrow-left"></span>
+        </button>
+        <h3>文件管理</h3>
+      </div>
 
-        <div id="files-list" class="contacts-list">
-            <!-- Files will be rendered here -->
-        </div>
+      <div id="files-list" class="contacts-list">
+        <!-- Files will be rendered here -->
+      </div>
     </div>
+    <div id="tooltip" class="tooltip"></div>
     <script src="{{filesJsUri}}"></script>
-</body>
+  </body>
 </html>
-
