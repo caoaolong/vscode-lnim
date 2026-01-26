@@ -105,10 +105,6 @@ export class ChatMessageService {
     this.updateServerStatus(this.isServerRunning);
   }
 
-  public getPort(): number {
-    return this.currentPort;
-  }
-
   public restart(port: number) {
     if (this.tcpServer) {
       try {
@@ -118,6 +114,10 @@ export class ChatMessageService {
     }
     this.currentPort = port || this.defaultPort;
     this.startTcpServer(this.currentPort);
+  }
+
+  public sendLinkMessage(ip: string, port: number, id: string): void {
+    
   }
 
   /**
@@ -203,62 +203,6 @@ export class ChatMessageService {
         );
       }
     }
-  }
-
-  public sendLinkMessage(contact: ChatContact, showError: boolean = false) {
-    // if (!contact || !contact.ip) {
-    //   if (showError) {
-    //     vscode.window.showErrorMessage(
-    //       "无法发送链接检测消息：目标或本地 UDP 服务无效",
-    //     );
-    //   }
-    //   return;
-    // }
-    // const targetPort =
-    //   contact.port && contact.port > 0 && contact.port <= 65535
-    //     ? contact.port
-    //     : this.defaultPort;
-    // const fromId = this.getSelfId ? this.getSelfId() : "";
-    // this.sendMessage(
-    //   {
-    //     type: "link",
-    //     from: fromId,
-    //     timestamp: Date.now(),
-    //     isReply: false, // 主动发送的link消息，不是回复
-    //   },
-    //   contact.ip,
-    //   targetPort,
-    // );
-  }
-
-  /**
-   * 发送文件接收完成确认
-   */
-  public sendFileReceivedConfirm(
-    filePath: string,
-    sessionId: string,
-    ip: string,
-    port: number,
-  ): void {
-    // if (!this.getSelfId) {
-    //   console.error(`[sendFileReceivedConfirm] getSelfId为空`);
-    //   return;
-    // }
-    // console.log(
-    //   `[sendFileReceivedConfirm] 发送文件接收完成确认 - sessionId: ${sessionId}, to: ${ip}:${port}`,
-    // );
-    // this.sendMessage(
-    //   {
-    //     type: "file_received",
-    //     from: this.getSelfId(),
-    //     timestamp: Date.now(),
-    //     sessionId,
-    //     value: filePath,
-    //   },
-    //   ip,
-    //   port,
-    // );
-    // console.log(`[sendFileReceivedConfirm] 确认消息已发送`);
   }
 
   private socketId(socket: net.Socket): string {

@@ -230,26 +230,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             );
             break;
           }
-
-          vscode.window.setStatusBarMessage(
-            `正在向 ${targetIp}:${targetPort} 发送链接检测消息...`,
-            2000,
-          );
-
-          // 创建临时联系人用于发送扫描消息
-          const tempContact: Contact = {
-            ip: targetIp,
-            port: targetPort,
-            username: "",
-          };
-
-          // 只负责发送消息，结果在 message 事件处理器中通过回调处理
-          this._messageService.sendLinkMessage(tempContact, false);
-          break;
-        }
-        case "checkContactLink": {
-          const c: Contact = data.contact;
-          this._messageService.sendLinkMessage(c, true);
+          // 向对方发送LinkMessage告知上线
+          this._messageService.sendLinkMessage(targetIp, targetPort, this._messageService.selfId());
           break;
         }
         case "deleteContact": {

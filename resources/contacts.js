@@ -88,12 +88,6 @@ window.addEventListener("message", (event) => {
         case "contactsSaved":
             contacts = message.contacts || [];
             renderContacts();
-            if (!hasAutoChecked && contacts.length > 0) {
-                contacts.forEach(c => {
-                    vscode.postMessage({ type: "checkContactLink", contact: c });
-                });
-                hasAutoChecked = true;
-            }
             break;
     }
 });
