@@ -321,9 +321,9 @@ export class ChatMessageService {
 
   private handleDataMessage(socket: net.Socket, msg: ChatMessage) {
     if (msg.type === "fend") {
-      this.handleFileReceived(msg);
+      this.fileService.closeSession(msg);
     } else if (msg.type === "fstats") {
-      this.handleStatsMessage(msg);
+      this.fileService.createSession(msg);
     } else if (msg.type === "link") {
       if (socket.remoteAddress && socket.remotePort) {
         ChatContactManager.handleLinkMessage({
@@ -342,12 +342,8 @@ export class ChatMessageService {
     } else if (msg.type === "chat") {
       this.handleChatMessage(socket, msg);
     } else if (msg.type === "file") {
-      console.log(msg);
+      this.fileService.handleFileRequest(socket, msg, this.selfId());
     }
-  }
-
-  handleStatsMessage(msg: ChatMessage) {
-    this.fileService.createSession(msg);
   }
 
   private handleOfflineMessage(socket: net.Socket) {
@@ -368,17 +364,6 @@ export class ChatMessageService {
         });
       });
     }
-  }
-
-  /**
-   * 处理文件接收完成确认
-   */
-  private handleFileReceived(msg: ChatMessage) {
-    console.log(
-      `[handleFileReceived] 文件接收完成确认: FD: ${msg.fd}, sessionId: ${msg.unique}`,
-    );
-    // 保存文件
-    this.fileService.closeSession(msg);
   }
 
   private handleChatMessage(socket: net.Socket, msg: ChatMessage) {

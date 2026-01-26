@@ -3,6 +3,8 @@ import { ChatMessage, ChatMessageService } from "./chat_message_service";
 import * as path from "path";
 import * as vscode from "vscode";
 import { ChatFileBuffer } from "./chat_file_buffer";
+import { Socket } from "net";
+import { FileChunkTransform } from "./file_chunk_transform";
 
 const MAX_BUFFER_SIZE = 1024 * 1024; // 1MB
 
@@ -54,6 +56,54 @@ export class ChatFileService {
   constructor(rootPath: string) {
     this.rootPath = rootPath;
     fs.mkdirSync(`${this.rootPath}/files`, { recursive: true });
+  }
+
+  async handleFileRequest(socket: Socket, msg: ChatMessage, id: string) {
+    if (!msg.unique || !msg.fd) {
+      return;
+    }
+    const filepath = msg.value || "";
+    if (!fs.existsSync(filepath)) {
+      return;
+    }
+    const stat = fs.statSync(filepath);
+    if (!stat.isFile()) {
+      return;
+    }
+    // 发送文件元数据
+    socket.write(
+      JSON.stringify({
+        type: "fstats",
+        from: id,
+        timestamp: Date.now(),
+        value: stat.size.toString(),
+        unique: msg.unique,
+        fd: msg.fd,
+      }),
+    );
+    // 发送文件
+    await new Promise<void>((resolve) => {
+      const rs = fs.createReadStream(filepath);
+      rs.on("end", () => {
+        // 清理会话
+        this.fds.delete(msg.unique || "");
+        // 返回
+        resolve();
+      });
+      rs.pipe(new FileChunkTransform(msg.unique || "")).pipe(socket, {
+        end: false,
+      });
+    });
+    // 发送完成消息
+    socket.write(
+      JSON.stringify({
+        type: "fend",
+        from: id,
+        timestamp: Date.now(),
+        unique: msg.unique,
+        fd: msg.fd,
+      }),
+    );
   }
 
   public createSession(msg: ChatMessage) {
