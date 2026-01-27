@@ -5,6 +5,7 @@ import * as crypto from "crypto";
 import { ChatMessageManager, ChatContact } from "./chat_message_manager";
 import { ChatFileMetadata, ChatFileService } from "./chat_file_service";
 import { ChatContactManager } from "./chat_contact_manager";
+import { parse } from "path";
 
 export interface ChatUserSettings {
   nickname: string;
@@ -63,9 +64,9 @@ export class ChatMessageService {
   }
 
   public selfId(): string {
-    return Buffer.from(`${this.settings.nickname}-${this.settings.ip}:${this.settings.port}`).toString(
-      "base64",
-    );
+    return Buffer.from(
+      `${this.settings.nickname}-${this.settings.ip}:${this.settings.port}`,
+    ).toString("base64");
   }
 
   public dispose(): void {
@@ -88,7 +89,7 @@ export class ChatMessageService {
     if (this.tcpServer) {
       try {
         this.tcpServer.close();
-      } catch { }
+      } catch {}
       this.tcpServer = undefined;
     }
     this.currentPort = port || this.defaultPort;
@@ -98,11 +99,13 @@ export class ChatMessageService {
   connectToServer(ip: string, port: number): void {
     // 连接并发送LinkMessage
     const socket = net.connect(port, ip, () => {
-      socket.write(JSON.stringify({
-        type: "link",
-        from: this.selfId(),
-        timestamp: Date.now(),
-      } as ChatMessage));
+      socket.write(
+        JSON.stringify({
+          type: "link",
+          from: this.selfId(),
+          timestamp: Date.now(),
+        } as ChatMessage),
+      );
     });
     // 设置输出链接
     this.outConnections.set(this.socketId(socket), socket);
@@ -292,10 +295,13 @@ export class ChatMessageService {
       this.fileService.createSession(msg);
     } else if (msg.type === "link") {
       if (socket.remoteAddress && socket.remotePort) {
+        const [nickname, host] = Buffer.from(msg.from, "base64")
+          .toString("utf8")
+          .split("-");
         ChatContactManager.handleLinkMessage({
-          ip: socket.remoteAddress,
-          port: socket.remotePort,
-          nickname: this.nickname(msg.from),
+          ip: host.split(":")[0],
+          port: parseInt(host.split(":")[1], 10),
+          nickname: nickname,
         }).then((contacts) => {
           if (contacts && this.view) {
             this.view.webview.postMessage({
@@ -304,11 +310,13 @@ export class ChatMessageService {
             });
           }
         });
-        socket.write(JSON.stringify({
-          type: "link",
-          from: this.selfId(),
-          timestamp: Date.now(),
-        } as ChatMessage));
+        socket.write(
+          JSON.stringify({
+            type: "link",
+            from: this.selfId(),
+            timestamp: Date.now(),
+          } as ChatMessage),
+        );
       }
     } else if (msg.type === "chat") {
       this.handleChatMessage(socket, msg);
