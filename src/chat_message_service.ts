@@ -41,25 +41,14 @@ export class ChatMessageService {
   public isServerRunning: boolean = false;
 
   private tcpServer?: net.Server;
-  private connections: Map<string, net.Socket> = new Map();
+  private inConnections: Map<string, net.Socket> = new Map();
+  private outConnections: Map<string, net.Socket> = new Map();
   private currentPort: number;
   private readonly defaultPort: number;
   private view?: vscode.WebviewView;
-  private readonly getSelfId?: () => string;
   private readonly messageManager?: ChatMessageManager;
   private readonly fileService: ChatFileService;
   private readonly settings: ChatUserSettings;
-  // 文件发送会话管理
-  private fileSendSessions = new Map<
-    string,
-    {
-      filePath: string;
-      fd: number;
-      chunkCount: number;
-      targetIp: string;
-      targetPort: number;
-    }
-  >();
 
   constructor(port: number, options: ChatMessageServiceOptions) {
     this.currentPort = port || options.defaultPort;
@@ -74,22 +63,12 @@ export class ChatMessageService {
   }
 
   public selfId(): string {
-    return Buffer.from(`${this.settings.nickname}-${Date.now()}`).toString(
+    return Buffer.from(`${this.settings.nickname}-${this.settings.ip}:${this.settings.port}`).toString(
       "base64",
     );
   }
 
   public dispose(): void {
-    // 清理所有发送会话
-    for (const [sessionId, session] of this.fileSendSessions.entries()) {
-      try {
-        fs.closeSync(session.fd);
-      } catch (error) {
-        console.error(`关闭文件句柄失败 ${sessionId}:`, error);
-      }
-    }
-    this.fileSendSessions.clear();
-
     if (this.fileService) {
       this.fileService.dispose();
     }
@@ -102,22 +81,60 @@ export class ChatMessageService {
   public attachView(view: vscode.WebviewView) {
     this.view = view;
     // 立即发送当前服务器状态
-    this.updateServerStatus(this.isServerRunning);
+    this.handleServerOnline(this.isServerRunning);
   }
 
   public restart(port: number) {
     if (this.tcpServer) {
       try {
         this.tcpServer.close();
-      } catch {}
+      } catch { }
       this.tcpServer = undefined;
     }
     this.currentPort = port || this.defaultPort;
     this.startTcpServer(this.currentPort);
   }
 
+  connectToServer(ip: string, port: number): void {
+    // 连接并发送LinkMessage
+    const socket = net.connect(port, ip, () => {
+      socket.write(JSON.stringify({
+        type: "link",
+        from: this.selfId(),
+        timestamp: Date.now(),
+      } as ChatMessage));
+    });
+    // 设置输出链接
+    this.outConnections.set(this.socketId(socket), socket);
+    socket.on("data", (buffer) => {
+      const data = JSON.parse(buffer.toString("utf8")) as ChatMessage;
+      if (data.type === "link") {
+        ChatContactManager.handleLinkMessage({
+          ip: ip,
+          port: port,
+          nickname: this.nickname(data.from),
+        }).then((contacts) => {
+          if (contacts && this.view) {
+            this.view.webview.postMessage({
+              type: "updateContacts",
+              contacts: contacts,
+            });
+          }
+        });
+      }
+    });
+  }
+
   public sendLinkMessage(ip: string, port: number, id: string): void {
-    
+    this.sendMessage(
+      {
+        type: "link",
+        from: id,
+        timestamp: Date.now(),
+      },
+      ip,
+      port,
+    );
   }
 
   /**
@@ -131,8 +148,8 @@ export class ChatMessageService {
       remoteAddress: ip,
       remotePort: port,
     } as net.Socket);
-    if (this.connections.has(id)) {
-      this.connections.get(id)?.write(JSON.stringify(message));
+    if (this.outConnections.has(id)) {
+      this.outConnections.get(id)?.write(JSON.stringify(message));
     }
   }
 
@@ -157,12 +174,7 @@ export class ChatMessageService {
   }
 
   public sendChatMessage(message: ChatMessage) {
-    if (!this.getSelfId) {
-      return;
-    }
-    const selfId = this.getSelfId();
     const timestamp = message.timestamp || Date.now();
-
     for (const c of message.target || []) {
       const parts = c.split(":");
       const ip = parts[0] || "";
@@ -178,7 +190,7 @@ export class ChatMessageService {
       this.sendMessage(
         {
           type: "chat",
-          from: selfId,
+          from: this.selfId(),
           timestamp,
           value: message.value,
           target: message.target,
@@ -219,15 +231,18 @@ export class ChatMessageService {
     this.tcpServer = net.createServer((socket) => this.handleMessage(socket));
 
     this.tcpServer.on("error", (err) => {
-      this.updateServerStatus(false);
+      this.handleServerOnline(false);
       vscode.window.showErrorMessage(`TCP Server error: ${err.message}`);
     });
     // 服务器状态
-    this.tcpServer.on("close", () => this.updateServerStatus(false));
-    this.tcpServer.listen(port, "0.0.0.0", () => this.updateServerStatus(true));
+    this.tcpServer.on("close", () => this.handleServerOnline(false));
+    this.tcpServer.listen(port, "0.0.0.0", () => this.handleServerOnline(true));
   }
 
-  private updateServerStatus(isRunning: boolean) {
+  private handleServerOnline(isRunning: boolean) {
+    // 通知所有联系人上线
+    this.notifyAllContactsOnline(this.selfId());
+    // 更新自身服务器状态
     this.isServerRunning = isRunning;
     if (this.view) {
       this.view.webview.postMessage({
@@ -236,10 +251,17 @@ export class ChatMessageService {
       });
     }
   }
+  private notifyAllContactsOnline(from: string) {
+    for (const contact of ChatContactManager.getContacts()) {
+      if (contact.ip && contact.port) {
+        this.sendLinkMessage(contact.ip, contact.port, from);
+      }
+    }
+  }
 
   private handleMessage(socket: net.Socket) {
     const id = this.socketId(socket);
-    this.connections.set(id, socket);
+    this.inConnections.set(id, socket);
     // 接收到消息
     socket.on("data", (buffer) => {
       try {
@@ -282,6 +304,11 @@ export class ChatMessageService {
             });
           }
         });
+        socket.write(JSON.stringify({
+          type: "link",
+          from: this.selfId(),
+          timestamp: Date.now(),
+        } as ChatMessage));
       }
     } else if (msg.type === "chat") {
       this.handleChatMessage(socket, msg);
@@ -292,7 +319,7 @@ export class ChatMessageService {
 
   private handleOfflineMessage(socket: net.Socket) {
     const id = this.socketId(socket);
-    this.connections.delete(id);
+    this.inConnections.delete(id);
     // TCP连接断开时，删除对应的联系人（标记为离线）
     if (socket.remoteAddress && socket.remotePort) {
       ChatContactManager.updateContact(

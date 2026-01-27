@@ -230,8 +230,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             );
             break;
           }
-          // 向对方发送LinkMessage告知上线
-          this._messageService.sendLinkMessage(targetIp, targetPort, this._messageService.selfId());
+          this._messageService.connectToServer(targetIp, targetPort);
           break;
         }
         case "deleteContact": {

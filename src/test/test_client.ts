@@ -36,7 +36,7 @@ class TcpTestClient {
     this.serverIp = serverIp;
     this.serverPort = serverPort;
     this.clientId = Buffer.from(
-      `测试客户端-${serverIp}:${serverPort + 1}`,
+      `测试客户端-${serverIp}:62289`,
     ).toString("base64");
 
     // 创建命令行交互界面
