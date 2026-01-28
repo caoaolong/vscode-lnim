@@ -1,10 +1,20 @@
 import * as net from "net";
 import * as vscode from "vscode";
-import * as fs from "fs";
 import * as crypto from "crypto";
 import { ChatMessageManager, ChatContact } from "./chat_message_manager";
 import { ChatFileMetadata, ChatFileService } from "./chat_file_service";
 import { ChatContactManager } from "./chat_contact_manager";
+
+export interface Connection {
+  port: number;
+  socket: net.Socket;
+}
+
+export interface Client {
+  in?: Connection;
+  out?: Connection;
+  nickname?: string;
+}
 
 export interface ChatUserSettings {
   nickname: string;
@@ -41,8 +51,8 @@ export class ChatMessageService {
   public isServerRunning: boolean = false;
 
   private tcpServer?: net.Server;
-  private inConnections: Map<string, net.Socket> = new Map();
-  private outConnections: Map<string, net.Socket> = new Map();
+  // IP: Client
+  private clients: Map<string, Client> = new Map();
   private currentPort: number;
   private readonly defaultPort: number;
   private view?: vscode.WebviewView;
@@ -61,6 +71,12 @@ export class ChatMessageService {
     this.settings = options.settings;
     this.startTcpServer(this.currentPort);
   }
+
+  // private createClient(ip: string, port: number, nickname: string, socket: net.Socket): void {
+  //   this.clients.set(ip, {
+  //     ip: ip, port: port, username: nickname, socket: socket
+  //   } as Client)
+  // }
 
   public selfId(): string {
     return Buffer.from(`${this.settings.nickname}-${this.settings.ip}:${this.settings.port}`).toString(
@@ -105,15 +121,25 @@ export class ChatMessageService {
       } as ChatMessage));
     });
     // 设置输出链接
-    this.outConnections.set(this.socketId(socket), socket);
+    this.clients.set(ip, {
+      out: {
+        port: port, socket: socket
+      } as Connection,
+    });
     socket.on("data", (buffer) => {
       const data = JSON.parse(buffer.toString("utf8")) as ChatMessage;
       if (data.type === "link") {
+        const nickname = this.nickname(data.from);
         ChatContactManager.handleLinkMessage({
           ip: ip,
           port: port,
-          nickname: this.nickname(data.from),
+          nickname: nickname,
         }).then((contacts) => {
+          // 更新连接
+          const client = this.clients.get(ip);
+          if (client && client.out) {
+            client.nickname = nickname;
+          }
           if (contacts && this.view) {
             this.view.webview.postMessage({
               type: "updateContacts",
@@ -125,31 +151,18 @@ export class ChatMessageService {
     });
   }
 
-  public sendLinkMessage(ip: string, port: number, id: string): void {
-    this.sendMessage(
-      {
-        type: "link",
-        from: id,
-        timestamp: Date.now(),
-      },
-      ip,
-      port,
-    );
-  }
-
   /**
    * 发送消息（不需要确认）
    */
-  private sendMessage(message: ChatMessage, ip: string, port: number): void {
+  private sendMessage(message: ChatMessage, ip: string): void {
     if (!this.tcpServer) {
       return;
     }
-    const id = this.socketId({
-      remoteAddress: ip,
-      remotePort: port,
-    } as net.Socket);
-    if (this.outConnections.has(id)) {
-      this.outConnections.get(id)?.write(JSON.stringify(message));
+    if (this.clients.has(ip)) {
+      const client = this.clients.get(ip);
+      if (client && client.out) {
+        client.out.socket.write(JSON.stringify(message));
+      }
     }
   }
 
@@ -168,8 +181,7 @@ export class ChatMessageService {
         unique: uuid,
         fd: file.fd,
       },
-      file.ip,
-      file.port,
+      file.ip
     );
   }
 
@@ -196,8 +208,7 @@ export class ChatMessageService {
           target: message.target,
           files: message.files,
         },
-        ip,
-        targetPort,
+        ip
       );
 
       // 保存消息到历史记录
@@ -254,14 +265,29 @@ export class ChatMessageService {
   private notifyAllContactsOnline(from: string) {
     for (const contact of ChatContactManager.getContacts()) {
       if (contact.ip && contact.port) {
-        this.sendLinkMessage(contact.ip, contact.port, from);
+        this.sendMessage(
+          {
+            type: "link",
+            from: from,
+            timestamp: Date.now(),
+          },
+          contact.ip
+        );
       }
     }
   }
 
   private handleMessage(socket: net.Socket) {
-    const id = this.socketId(socket);
-    this.inConnections.set(id, socket);
+    // 设置连接
+    if (socket.remoteAddress && socket.remotePort) {
+      this.clients.set(socket.remoteAddress, {
+        in: {
+          port: socket.remotePort,
+          socket: socket
+        } as Connection,
+      })
+    }
+
     // 接收到消息
     socket.on("data", (buffer) => {
       try {
@@ -291,11 +317,20 @@ export class ChatMessageService {
     } else if (msg.type === "fstats") {
       this.fileService.createSession(msg);
     } else if (msg.type === "link") {
+      const nickname = this.nickname(msg.from);
       if (socket.remoteAddress && socket.remotePort) {
+        const client = this.clients.get(socket.remoteAddress);
+        if (client && !client.out) {
+          client.nickname = nickname;
+          client.out = {
+            port: socket.remotePort,
+            socket: socket
+          } as Connection;
+        }
         ChatContactManager.handleLinkMessage({
           ip: socket.remoteAddress,
           port: socket.remotePort,
-          nickname: this.nickname(msg.from),
+          nickname: nickname,
         }).then((contacts) => {
           if (contacts && this.view) {
             this.view.webview.postMessage({
@@ -318,8 +353,9 @@ export class ChatMessageService {
   }
 
   private handleOfflineMessage(socket: net.Socket) {
-    const id = this.socketId(socket);
-    this.inConnections.delete(id);
+    if (socket.remoteAddress) {
+      this.clients.delete(socket.remoteAddress);
+    }
     // TCP连接断开时，删除对应的联系人（标记为离线）
     if (socket.remoteAddress && socket.remotePort) {
       ChatContactManager.updateContact(
