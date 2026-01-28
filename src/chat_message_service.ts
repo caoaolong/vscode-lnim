@@ -79,9 +79,9 @@ export class ChatMessageService {
   // }
 
   public selfId(): string {
-    return Buffer.from(`${this.settings.nickname}-${this.settings.ip}:${this.settings.port}`).toString(
-      "base64",
-    );
+    return Buffer.from(
+      `${this.settings.nickname}-${this.settings.ip}:${this.settings.port}`,
+    ).toString("base64");
   }
 
   public dispose(): void {
@@ -104,7 +104,7 @@ export class ChatMessageService {
     if (this.tcpServer) {
       try {
         this.tcpServer.close();
-      } catch { }
+      } catch {}
       this.tcpServer = undefined;
     }
     this.currentPort = port || this.defaultPort;
@@ -114,11 +114,13 @@ export class ChatMessageService {
   connectToServer(ip: string, port: number): void {
     // 连接并发送LinkMessage
     const socket = net.connect(port, ip, () => {
-      socket.write(JSON.stringify({
-        type: "link",
-        from: this.selfId(),
-        timestamp: Date.now(),
-      } as ChatMessage));
+      socket.write(
+        JSON.stringify({
+          type: "link",
+          from: this.selfId(),
+          timestamp: Date.now(),
+        } as ChatMessage),
+      );
     });
     // 设置输出链接
     this.clients.set(ip, {
@@ -339,11 +341,13 @@ export class ChatMessageService {
             });
           }
         });
-        socket.write(JSON.stringify({
-          type: "link",
-          from: this.selfId(),
-          timestamp: Date.now(),
-        } as ChatMessage));
+        socket.write(
+          JSON.stringify({
+            type: "link",
+            from: this.selfId(),
+            timestamp: Date.now(),
+          } as ChatMessage),
+        );
       }
     } else if (msg.type === "chat") {
       this.handleChatMessage(socket, msg);
