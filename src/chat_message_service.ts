@@ -58,7 +58,7 @@ export class ChatMessageService {
   private view?: vscode.WebviewView;
   private readonly messageManager?: ChatMessageManager;
   private readonly fileService: ChatFileService;
-  private readonly settings: ChatUserSettings;
+  private settings: ChatUserSettings;
 
   constructor(port: number, options: ChatMessageServiceOptions) {
     this.currentPort = port || options.defaultPort;
@@ -72,13 +72,14 @@ export class ChatMessageService {
     this.startTcpServer(this.currentPort);
   }
 
-  // private createClient(ip: string, port: number, nickname: string, socket: net.Socket): void {
-  //   this.clients.set(ip, {
-  //     ip: ip, port: port, username: nickname, socket: socket
-  //   } as Client)
-  // }
+  /**
+   * 更新设置，确保 selfId() 每次调用时都能读取到最新的 settings
+   */
+  public updateSettings(settings: ChatUserSettings): void {
+    this.settings = settings;
+  }
 
-  public selfId(): string {
+  public self(): string {
     return Buffer.from(
       `${this.settings.nickname}-${this.settings.ip}:${this.settings.port}`,
     ).toString("base64");
@@ -104,7 +105,7 @@ export class ChatMessageService {
     if (this.tcpServer) {
       try {
         this.tcpServer.close();
-      } catch {}
+      } catch { }
       this.tcpServer = undefined;
     }
     this.currentPort = port || this.defaultPort;
@@ -117,7 +118,7 @@ export class ChatMessageService {
       socket.write(
         JSON.stringify({
           type: "link",
-          from: this.selfId(),
+          from: this.self(),
           timestamp: Date.now(),
         } as ChatMessage),
       );
@@ -177,7 +178,7 @@ export class ChatMessageService {
     this.sendMessage(
       {
         type: "file",
-        from: this.selfId(),
+        from: this.self(),
         timestamp: Date.now(),
         value: file.path,
         unique: uuid,
@@ -204,7 +205,7 @@ export class ChatMessageService {
       this.sendMessage(
         {
           type: "chat",
-          from: this.selfId(),
+          from: this.self(),
           timestamp,
           value: message.value,
           target: message.target,
@@ -230,14 +231,12 @@ export class ChatMessageService {
     }
   }
 
-  private socketId(socket: net.Socket): string {
-    return Buffer.from(`${socket.remoteAddress}:${socket.remotePort}`).toString(
-      "base64",
-    );
-  }
-
   private nickname(from: string): string {
     return Buffer.from(from, "base64").toString("utf8").split("-")[0];
+  }
+
+  private address(from: string): string {
+    return Buffer.from(from, "base64").toString("utf8").split("-")[1];
   }
 
   private startTcpServer(port: number) {
@@ -254,7 +253,7 @@ export class ChatMessageService {
 
   private handleServerOnline(isRunning: boolean) {
     // 通知所有联系人上线
-    this.notifyAllContactsOnline(this.selfId());
+    this.notifyAllContactsOnline(this.self());
     // 更新自身服务器状态
     this.isServerRunning = isRunning;
     if (this.view) {
@@ -280,16 +279,15 @@ export class ChatMessageService {
   }
 
   private handleMessage(socket: net.Socket) {
-    // 设置连接
+    // 创建输入连接
     if (socket.remoteAddress && socket.remotePort) {
       this.clients.set(socket.remoteAddress, {
         in: {
           port: socket.remotePort,
           socket: socket
         } as Connection,
-      })
+      });
     }
-
     // 接收到消息
     socket.on("data", (buffer) => {
       try {
@@ -320,39 +318,38 @@ export class ChatMessageService {
       this.fileService.createSession(msg);
     } else if (msg.type === "link") {
       const nickname = this.nickname(msg.from);
-      if (socket.remoteAddress && socket.remotePort) {
-        const client = this.clients.get(socket.remoteAddress);
-        if (client && !client.out) {
-          client.nickname = nickname;
-          client.out = {
-            port: socket.remotePort,
-            socket: socket
-          } as Connection;
-        }
-        ChatContactManager.handleLinkMessage({
-          ip: socket.remoteAddress,
-          port: socket.remotePort,
-          nickname: nickname,
-        }).then((contacts) => {
-          if (contacts && this.view) {
-            this.view.webview.postMessage({
-              type: "updateContacts",
-              contacts: contacts,
-            });
-          }
-        });
-        socket.write(
-          JSON.stringify({
-            type: "link",
-            from: this.selfId(),
-            timestamp: Date.now(),
-          } as ChatMessage),
-        );
+      const [ip, port] = this.address(msg.from).split(":");
+      const client = this.clients.get(ip);
+      if (client && !client.out) {
+        client.nickname = nickname;
+        client.out = {
+          port: parseInt(port, 10),
+          socket: net.connect(parseInt(port, 10), ip)
+        } as Connection;
       }
+      ChatContactManager.handleLinkMessage({
+        ip: ip,
+        port: parseInt(port, 10),
+        nickname: nickname,
+      }).then((contacts) => {
+        if (contacts && this.view) {
+          this.view.webview.postMessage({
+            type: "updateContacts",
+            contacts: contacts,
+          });
+        }
+      });
+      socket.write(
+        JSON.stringify({
+          type: "link",
+          from: this.self(),
+          timestamp: Date.now(),
+        } as ChatMessage),
+      );
     } else if (msg.type === "chat") {
       this.handleChatMessage(socket, msg);
     } else if (msg.type === "file") {
-      this.fileService.handleFileRequest(socket, msg, this.selfId());
+      this.fileService.handleFileRequest(socket, msg, this.self());
     }
   }
 

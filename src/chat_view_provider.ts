@@ -94,6 +94,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const incoming = data.settings as UserSettings;
           const updated = await this._store.updateUserSettings(incoming);
           this._userSettings = updated;
+          // 更新 ChatMessageService 的 settings，确保 selfId() 能读取到最新值
+          this._messageService.updateSettings(updated);
           if (updated.port !== this._currentPort) {
             this._currentPort = updated.port;
             this._messageService.restart(this._currentPort);
