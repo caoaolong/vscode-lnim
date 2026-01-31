@@ -129,6 +129,7 @@ export class ChatMessageService {
         port: port, socket: socket
       } as Connection,
     });
+		console.log(`[${ip}]: Self -> Target (Out)`);
     socket.on("data", (buffer) => {
       const data = JSON.parse(buffer.toString("utf8")) as ChatMessage;
       if (data.type === "link") {
@@ -287,6 +288,7 @@ export class ChatMessageService {
           socket: socket
         } as Connection,
       });
+			console.log(`[${socket.remoteAddress}]: Target -> Self (In)`);
     }
     // 接收到消息
     socket.on("data", (buffer) => {
