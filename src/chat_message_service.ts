@@ -105,7 +105,7 @@ export class ChatMessageService {
     if (this.tcpServer) {
       try {
         this.tcpServer.close();
-      } catch { }
+      } catch {}
       this.tcpServer = undefined;
     }
     this.currentPort = port || this.defaultPort;
@@ -126,10 +126,11 @@ export class ChatMessageService {
     // 设置输出链接
     this.clients.set(ip, {
       out: {
-        port: port, socket: socket
+        port: port,
+        socket: socket,
       } as Connection,
     });
-		console.log(`[${ip}]: Self -> Target (Out)`);
+    console.log(`[${ip}]: Self -> Target (Out)`);
     socket.on("data", (buffer) => {
       const data = JSON.parse(buffer.toString("utf8")) as ChatMessage;
       if (data.type === "link") {
@@ -185,7 +186,7 @@ export class ChatMessageService {
         unique: uuid,
         fd: file.fd,
       },
-      file.ip
+      file.ip,
     );
   }
 
@@ -212,7 +213,7 @@ export class ChatMessageService {
           target: message.target,
           files: message.files,
         },
-        ip
+        ip,
       );
 
       // 保存消息到历史记录
@@ -281,7 +282,7 @@ export class ChatMessageService {
             from: from,
             timestamp: Date.now(),
           },
-          contact.ip
+          contact.ip,
         );
       }
     }
@@ -290,13 +291,21 @@ export class ChatMessageService {
   private handleMessage(socket: net.Socket) {
     // 创建输入连接
     if (socket.remoteAddress && socket.remotePort) {
-      this.clients.set(socket.remoteAddress, {
-        in: {
+      const client = this.clients.get(socket.remoteAddress);
+      if (client && !client.in) {
+        client.in = {
           port: socket.remotePort,
-          socket: socket
-        } as Connection,
-      });
-			console.log(`[${socket.remoteAddress}]: Target -> Self (In)`);
+          socket: socket,
+        } as Connection;
+      } else {
+        this.clients.set(socket.remoteAddress, {
+          in: {
+            port: socket.remotePort,
+            socket: socket,
+          } as Connection,
+        });
+      }
+      console.log(`[${socket.remoteAddress}]: Target -> Self (In)`);
     }
     // 接收到消息
     socket.on("data", (buffer) => {
@@ -334,8 +343,9 @@ export class ChatMessageService {
         client.nickname = nickname;
         client.out = {
           port: parseInt(port, 10),
-          socket: net.connect(parseInt(port, 10), ip)
+          socket: net.connect(parseInt(port, 10), ip),
         } as Connection;
+        console.log(`[${ip}]: Self -> Target (Out)`);
       }
       ChatContactManager.handleLinkMessage({
         ip: ip,
