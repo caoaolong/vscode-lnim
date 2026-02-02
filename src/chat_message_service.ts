@@ -253,8 +253,16 @@ export class ChatMessageService {
   }
 
   private handleServerOnline(isRunning: boolean) {
-    // 通知所有联系人上线
-    this.notifyAllContactsOnline(this.self());
+    // 先将所有联系人设为离线，再向所有人发 LinkMessage；收到对方 Link 后再改为在线
+    ChatContactManager.setAllContactsOffline().then((contacts) => {
+      if (this.view) {
+        this.view.webview.postMessage({
+          type: "updateContacts",
+          contacts,
+        });
+      }
+      this.notifyAllContactsOnline(this.self());
+    });
     // 更新自身服务器状态
     this.isServerRunning = isRunning;
     if (this.view) {
@@ -380,6 +388,11 @@ export class ChatMessageService {
     const decoded = Buffer.from(msg.from, "base64").toString("utf8");
     const parts = decoded.split("-");
     const username = parts[0];
+    // 规范化为与发送展示一致的格式：value 用 {#path}，files 用路径数组，便于前端 renderMessageContent 正确显示
+    const { displayValue, filesArray } = this.normalizeReceivedChatForDisplay(
+      msg.value || "",
+      msg.files,
+    );
     if (this.messageManager && socket.remoteAddress && socket.remotePort) {
       this.messageManager.saveIncoming(
         {
@@ -387,7 +400,7 @@ export class ChatMessageService {
           ip: socket.remoteAddress,
           port: socket.remotePort,
         },
-        msg.value || "",
+        displayValue,
         msg.timestamp,
       );
     }
@@ -397,11 +410,36 @@ export class ChatMessageService {
         from: username,
         fromIp: socket.remoteAddress,
         fromPort: socket.remotePort,
-        message: msg.value || "",
-        files: msg.files || [],
+        message: displayValue,
+        files: filesArray,
         timestamp: msg.timestamp,
       });
     }
+  }
+
+  /**
+   * 将收到的 chat 消息规范化为与发送时展示一致的格式：
+   * - value 中 &lt;file1&gt; 等占位符替换为 {#path}，与前端 renderMessageContent 的 /\{#([^}]+)\}/g 一致
+   * - files 统一为路径数组 string[]，与发送侧展示用的 files 格式一致
+   */
+  private normalizeReceivedChatForDisplay(
+    value: string,
+    files: string[] | Record<string, string> | undefined,
+  ): { displayValue: string; filesArray: string[] } {
+    let filesArray: string[] = [];
+    if (Array.isArray(files)) {
+      filesArray = files;
+    } else if (files && typeof files === "object") {
+      const keys = Object.keys(files).sort();
+      filesArray = keys.map((k) => (files as Record<string, string>)[k]).filter(Boolean);
+    }
+    // 将 <file1>、<file2> 等占位符替换为 {#path}，与发送侧展示格式一致
+    const displayValue = value.replace(/<file(\d+)>/g, (_, n) => {
+      const idx = parseInt(n, 10) - 1;
+      const path = filesArray[idx];
+      return path != null ? `{#${path}}` : `<file${n}>`;
+    });
+    return { displayValue, filesArray };
   }
 
   public async deleteHistory(contact: {

@@ -51,6 +51,20 @@ export class ChatContactManager {
     return this.contacts;
   }
 
+  /**
+   * 将所有联系人设为离线（例如 TCP 服务重启后先重置状态，再靠对方回 Link 改为在线）
+   */
+  public static async setAllContactsOffline(): Promise<Contact[]> {
+    for (const c of this.contacts) {
+      if (c.ip && c.port !== undefined) {
+        this.contacts = await this.store.updateContact(c.ip, c.port, {
+          status: false,
+        });
+      }
+    }
+    return this.contacts;
+  }
+
   public static async handleLinkMessage(
     result: LinkMessageResult
   ): Promise<Contact[] | undefined> {
