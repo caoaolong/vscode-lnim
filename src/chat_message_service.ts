@@ -328,6 +328,7 @@ export class ChatMessageService {
           port: parseInt(port, 10),
           socket: net.connect(parseInt(port, 10), ip)
         } as Connection;
+				console.log(`[${ip}]: Self -> Target (Out)`);
       }
       ChatContactManager.handleLinkMessage({
         ip: ip,
