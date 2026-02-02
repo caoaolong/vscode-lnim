@@ -461,14 +461,18 @@ export class ChatMessageService {
       return;
     }
     const peerIp = contact.ip || "";
+    const peerUsername = contact.username || "";
     const peerPort =
       contact.port && contact.port > 0 && contact.port <= 65535
         ? contact.port
         : this.defaultPort;
-    const peerUsername = contact.username || "";
-    const peerKey = `${peerIp}|${peerPort}|${peerUsername}`;
+    const peerKeyWithPort = `${peerIp}|${peerPort}|${peerUsername}`;
+    const peerKeyEmptyPort = `${peerIp}||${peerUsername}`;
 
-    await this.messageManager.deleteHistory(peerKey);
+    await this.messageManager.deleteHistory(peerKeyWithPort);
+    if (peerKeyEmptyPort !== peerKeyWithPort) {
+      await this.messageManager.deleteHistory(peerKeyEmptyPort);
+    }
   }
 
   public async clearAllHistory() {

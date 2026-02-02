@@ -238,18 +238,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case "deleteContact": {
           const c: Contact = data.contact;
           const answer = await vscode.window.showWarningMessage(
-            `确定要删除联系人 ${c.username || c.ip} 吗？`,
+            `确定要删除联系人 ${c.username || c.ip} 吗？将同时删除与该联系人的全部聊天记录，此操作不可撤销。`,
             "删除",
             "取消",
           );
           if (answer !== "删除") {
             break;
           }
+          await this._messageService.deleteHistory(c);
           const contacts = await ChatContactManager.deleteContact(c);
           webviewView.webview.postMessage({
             type: "contactsSaved",
             contacts,
           });
+          await this.sendChatHistoryToWebview(webviewView.webview);
           break;
         }
         case "deleteRecord": {
@@ -263,6 +265,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             break;
           }
           await this._messageService.deleteHistory(c);
+          await this.sendChatHistoryToWebview(webviewView.webview);
           break;
         }
         case "clearAllChatHistory": {
