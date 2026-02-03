@@ -21,17 +21,6 @@ function positionTooltip(e) {
   });
 }
 
-// $("[data-tooltip]").on("mouseenter", function (e) {
-// 	console.log(e);
-//   const text = $(this).data("tooltip");
-//   $tooltip.text(text).show();
-//   positionTooltip(e);
-// });
-
-// $("[data-tooltip]").on("mouseleave", function (e) {
-// 	$tooltip.hide();
-// });
-
 function formatFileSize(bytes) {
   if (bytes === 0) {
     return "0 B";

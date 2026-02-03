@@ -130,7 +130,6 @@ export class ChatMessageService {
         socket: socket,
       } as Connection,
     });
-    console.log(`[${ip}]: Self -> Target (Out)`);
     socket.on("data", (buffer) => {
       const data = JSON.parse(buffer.toString("utf8")) as ChatMessage;
       if (data.type === "link") {
@@ -305,7 +304,6 @@ export class ChatMessageService {
           } as Connection,
         });
       }
-      console.log(`[${socket.remoteAddress}]: Target -> Self (In)`);
     }
     // 接收到消息
     socket.on("data", (buffer) => {
@@ -345,7 +343,6 @@ export class ChatMessageService {
           port: parseInt(port, 10),
           socket: net.connect(parseInt(port, 10), ip),
         } as Connection;
-        console.log(`[${ip}]: Self -> Target (Out)`);
       }
       ChatContactManager.handleLinkMessage({
         ip: ip,
@@ -441,13 +438,15 @@ export class ChatMessageService {
       filesArray = files;
     } else if (files && typeof files === "object") {
       const keys = Object.keys(files).sort();
-      filesArray = keys.map((k) => (files as Record<string, string>)[k]).filter(Boolean);
+      filesArray = keys
+        .map((k) => (files as Record<string, string>)[k])
+        .filter(Boolean);
     }
     // 将 <file1>、<file2> 等占位符替换为 {#path}，与发送侧展示格式一致
     const displayValue = value.replace(/<file(\d+)>/g, (_, n) => {
       const idx = parseInt(n, 10) - 1;
       const path = filesArray[idx];
-      return path != null ? `{#${path}}` : `<file${n}>`;
+      return path !== null ? `{#${path}}` : `<file${n}>`;
     });
     return { displayValue, filesArray };
   }

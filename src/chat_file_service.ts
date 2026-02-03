@@ -225,7 +225,6 @@ export class ChatFileService {
    */
   public getFiles(): ReceivedFile[] {
     const files: ReceivedFile[] = [];
-    console.log(`[ChatFileService] 扫描接收文件目录: ${this.rootPath}`);
     if (!fs.existsSync(this.rootPath)) {
       return files;
     }
@@ -373,6 +372,5 @@ export class ChatFileService {
     // TODO: 写入缓冲区
     session.buffer.write(data);
     session.received += data.length;
-    console.log(`[saveChunk] 写入数据: ${data.length} bytes`);
   }
 }
