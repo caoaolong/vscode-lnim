@@ -1,15 +1,16 @@
 {
   "name": "vscode-lnim",
   "displayName": "vscode-lnim",
-  "publisher": "calong",
+  "publisher": "codingsoul",
   "description": "局域网内P2P通信工具",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "engines": {
     "vscode": "^1.108.0"
   },
   "categories": [
-    "Other"
+    "Chat"
   ],
+	"icon": "logo.png",
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
