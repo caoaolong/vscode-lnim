@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; style-src {{cspSource}} 'unsafe-inline'; font-src {{cspSource}}; script-src {{cspSource}} 'unsafe-inline'; connect-src https:;"
+      content="default-src 'none'; style-src {{cspSource}} 'unsafe-inline'; font-src {{cspSource}}; script-src {{cspSource}} 'unsafe-inline'; connect-src https:; img-src 'self' data:;"
     />
     <title>Files</title>
     <link rel="stylesheet" href="{{codiconsCssUri}}" />
@@ -27,13 +27,48 @@
       .back-header {
         display: flex;
         align-items: center;
+        justify-content: space-between;
         gap: 10px;
-        margin-bottom: 20px;
+        margin-bottom: 12px;
         border-bottom: 1px solid var(--vscode-widget-border);
         padding-bottom: 10px;
       }
+      .back-header-left {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
       .back-header h3 {
         margin: 0;
+      }
+      .files-tabs {
+        display: flex;
+        gap: 4px;
+        margin-bottom: 12px;
+        border-bottom: 1px solid var(--vscode-widget-border);
+      }
+      .files-tab {
+        padding: 8px 16px;
+        border: none;
+        background: transparent;
+        color: var(--vscode-foreground);
+        cursor: pointer;
+        font-size: 13px;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -1px;
+      }
+      .files-tab:hover {
+        background: var(--vscode-list-hoverBackground);
+      }
+      .files-tab.active {
+        border-bottom-color: var(--vscode-focusBorder);
+        color: var(--vscode-foreground);
+      }
+      .files-tab-content {
+        display: none;
+      }
+      .files-tab-content.active {
+        display: block;
       }
       .file-item {
         display: flex;
@@ -109,22 +144,78 @@
         word-wrap: break-word; /* 兼容旧浏览器 */
         line-height: 1.4;
       }
+      .qr-modal-overlay {
+        position: fixed;
+        left: 0;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.6);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 2000;
+      }
+      .qr-modal-overlay.show {
+        display: flex;
+      }
+      .qr-modal {
+        background: var(--vscode-editor-background);
+        border: 1px solid var(--vscode-widget-border);
+        border-radius: 8px;
+        padding: 20px;
+        text-align: center;
+        max-width: 90%;
+      }
+      .qr-modal-title {
+        margin-bottom: 12px;
+        font-size: 13px;
+        word-break: break-all;
+      }
+      .qr-modal img {
+        display: block;
+        margin: 0 auto 12px;
+      }
+      .qr-modal-close {
+        margin-top: 8px;
+      }
     </style>
   </head>
   <body>
     <div id="files-panel">
       <div class="back-header">
-        <button class="icon-btn" id="back-btn" title="Back">
-          <span class="codicon codicon-arrow-left"></span>
+        <div class="back-header-left">
+          <button class="icon-btn" id="back-btn" title="返回">
+            <span class="codicon codicon-arrow-left"></span>
+          </button>
+          <h3>文件管理</h3>
+        </div>
+        <button class="icon-btn" id="add-local-file-btn" title="选择文件添加到列表">
+          <span class="codicon codicon-add"></span>
         </button>
-        <h3>文件管理</h3>
       </div>
 
-      <div id="files-list" class="contacts-list">
-        <!-- Files will be rendered here -->
+      <div class="files-tabs">
+        <button class="files-tab active" data-tab="local">本地文件</button>
+        <button class="files-tab" data-tab="received">接收文件</button>
+      </div>
+
+      <div id="local-files-content" class="files-tab-content active">
+        <div id="local-files-list" class="contacts-list"></div>
+      </div>
+      <div id="received-files-content" class="files-tab-content">
+        <div id="received-files-list" class="contacts-list"></div>
       </div>
     </div>
     <div id="tooltip" class="tooltip"></div>
+
+    <div id="qr-modal-overlay" class="qr-modal-overlay">
+      <div class="qr-modal">
+        <div class="qr-modal-title" id="qr-modal-title"></div>
+        <img id="qr-modal-img" alt="二维码" />
+        <button class="icon-btn qr-modal-close" id="qr-modal-close">关闭</button>
+      </div>
+    </div>
     <script src="{{filesJsUri}}"></script>
   </body>
 </html>

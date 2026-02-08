@@ -1,16 +1,58 @@
 const vscode = acquireVsCodeApi();
-const $filesList = $("#files-list");
+const $localFilesList = $("#local-files-list");
+const $receivedFilesList = $("#received-files-list");
 const $backBtn = $("#back-btn");
+const $addLocalFileBtn = $("#add-local-file-btn");
 const $tooltip = $("#tooltip");
+const $qrOverlay = $("#qr-modal-overlay");
+const $qrModalImg = $("#qr-modal-img");
+const $qrModalTitle = $("#qr-modal-title");
+const $qrModalClose = $("#qr-modal-close");
 
-let files = [];
+let localFiles = [];
+let receivedFiles = [];
+let activeTab = "local";
 
 $(() => {
   vscode.postMessage({ type: "getFiles" });
+  vscode.postMessage({ type: "getLocalFiles" });
 });
 
 $backBtn.on("click", () => {
   vscode.postMessage({ type: "navigate", page: "chat" });
+});
+
+$addLocalFileBtn.on("click", () => {
+  vscode.postMessage({ type: "addLocalFiles" });
+});
+
+$(".files-tab").on("click", function () {
+  const tab = $(this).data("tab");
+  activeTab = tab;
+  $(".files-tab").removeClass("active");
+  $(this).addClass("active");
+  $(".files-tab-content").removeClass("active");
+  if (tab === "local") {
+    $("#local-files-content").addClass("active");
+  } else {
+    $("#received-files-content").addClass("active");
+  }
+});
+
+function showQrModal(dataUrl, fileName) {
+  $qrModalTitle.text(fileName || "二维码");
+  $qrModalImg.attr("src", dataUrl);
+  $qrOverlay.addClass("show");
+}
+
+function hideQrModal() {
+  $qrOverlay.removeClass("show");
+  $qrModalImg.attr("src", "");
+}
+
+$qrModalClose.on("click", hideQrModal);
+$qrOverlay.on("click", function (e) {
+  if (e.target === this) hideQrModal();
 });
 
 function positionTooltip(e) {
@@ -67,75 +109,103 @@ function getFileIcon(fileName) {
   return iconMap[ext] || "codicon-file";
 }
 
-function renderFiles() {
-  $filesList.empty();
+function buildFileItem(file, options) {
+  const { isLocal = false } = options || {};
+  const $item = $("<div>").addClass("file-item");
+  const $icon = $("<div>").addClass("file-icon");
+  $icon.append($("<span>").addClass(`codicon ${getFileIcon(file.name)}`));
+  $icon.on("mouseenter", function (e) {
+    $tooltip.text(file.path).show();
+    positionTooltip(e);
+  });
+  $icon.on("mousemove", positionTooltip);
+  $icon.on("mouseleave", () => $tooltip.hide());
+  $item.append($icon);
 
-  if (files.length === 0) {
+  const $info = $("<div>").addClass("file-info");
+  const $name = $("<div>").addClass("file-name").text(file.name);
+  const $meta = $("<div>").addClass("file-meta");
+  if (isLocal) {
+    $meta.append(
+      $("<span>")
+        .addClass("file-size")
+        .text(`大小: ${formatFileSize(file.size)}`)
+    );
+  } else {
+    $meta
+      .append($("<span>").text(`发送人: ${file.sender || "Unknown"}`))
+      .append(
+        $("<span>")
+          .addClass("file-size")
+          .text(`大小: ${formatFileSize(file.size)}`)
+      );
+  }
+  $info.append($name).append($meta);
+  $item.append($info);
+
+  const $actions = $("<div>").addClass("file-actions");
+
+  const $openBtn = $("<button>")
+    .addClass("icon-btn")
+    .attr("title", "打开文件")
+    .on("click", (e) => {
+      e.stopPropagation();
+      vscode.postMessage({ type: "openFile", file });
+    });
+  $openBtn.append($("<span>").addClass("codicon codicon-go-to-file"));
+
+  const $qrBtn = $("<button>")
+    .addClass("icon-btn")
+    .attr("title", "二维码")
+    .on("click", (e) => {
+      e.stopPropagation();
+      vscode.postMessage({ type: "generateQrCode", file });
+    });
+  $qrBtn.append($("<span>").addClass("codicon codicon-link-external"));
+
+  const $delBtn = $("<button>")
+    .addClass("icon-btn delete-btn")
+    .attr("title", isLocal ? "从列表移除" : "删除文件")
+    .on("click", (e) => {
+      e.stopPropagation();
+      if (isLocal) {
+        vscode.postMessage({ type: "deleteLocalFile", file });
+      } else {
+        vscode.postMessage({ type: "deleteFile", file });
+      }
+    });
+  $delBtn.append($("<span>").addClass("codicon codicon-trash"));
+
+  $actions.append($openBtn).append($qrBtn).append($delBtn);
+  $item.append($actions);
+  return $item;
+}
+
+function renderLocalFiles() {
+  $localFilesList.empty();
+  if (localFiles.length === 0) {
+    const $empty = $("<div>").addClass("empty-state");
+    $empty.append($("<span>").addClass("codicon codicon-file"));
+    $empty.append($("<div>").text("暂无本地文件，点击右上角添加"));
+    $localFilesList.append($empty);
+    return;
+  }
+  localFiles.forEach((file) => {
+    $localFilesList.append(buildFileItem(file, { isLocal: true }));
+  });
+}
+
+function renderReceivedFiles() {
+  $receivedFilesList.empty();
+  if (receivedFiles.length === 0) {
     const $empty = $("<div>").addClass("empty-state");
     $empty.append($("<span>").addClass("codicon codicon-file"));
     $empty.append($("<div>").text("暂无接收的文件"));
-    $filesList.append($empty);
+    $receivedFilesList.append($empty);
     return;
   }
-
-  files.forEach((file) => {
-    const $item = $("<div>").addClass("file-item");
-    // File icon
-    const $icon = $("<div>").addClass("file-icon");
-    $icon.append($("<span>").addClass(`codicon ${getFileIcon(file.name)}`));
-		$icon.on("mouseenter", function (e) {
-      $tooltip.text(file.path).show();
-      positionTooltip(e);
-    });
-    $icon.on("mousemove", function (e) {
-      positionTooltip(e);
-    });
-    $icon.on("mouseleave", function (e) {
-      $tooltip.hide();
-    });
-    $item.append($icon);
-
-    // File info
-    const $info = $("<div>").addClass("file-info");
-    const $name = $("<div>").addClass("file-name").text(file.name);
-    const $meta = $("<div>").addClass("file-meta");
-
-    // const $path = $("<span>").text(`路径: ${file.path}`);
-    const $sender = $("<span>").text(`发送人: ${file.sender || "Unknown"}`);
-    const $size = $("<span>")
-      .addClass("file-size")
-      .text(`大小: ${formatFileSize(file.size)}`);
-
-    // $meta.append($path).append($sender).append($size);
-    $meta.append($sender).append($size);
-    $info.append($name).append($meta);
-    $item.append($info);
-
-    // Actions
-    const $actions = $("<div>").addClass("file-actions");
-
-    const $openBtn = $("<button>")
-      .addClass("icon-btn")
-      .attr("title", "打开文件")
-      .on("click", (e) => {
-        e.stopPropagation();
-        vscode.postMessage({ type: "openFile", file: file });
-      });
-    $openBtn.append($("<span>").addClass("codicon codicon-go-to-file"));
-
-    const $delBtn = $("<button>")
-      .addClass("icon-btn delete-btn")
-      .attr("title", "删除文件")
-      .on("click", (e) => {
-        e.stopPropagation();
-        vscode.postMessage({ type: "deleteFile", file: file });
-      });
-    $delBtn.append($("<span>").addClass("codicon codicon-trash"));
-
-    $actions.append($openBtn).append($delBtn);
-    $item.append($actions);
-
-    $filesList.append($item);
+  receivedFiles.forEach((file) => {
+    $receivedFilesList.append(buildFileItem(file, { isLocal: false }));
   });
 }
 
@@ -143,8 +213,18 @@ window.addEventListener("message", (event) => {
   const message = event.data;
   switch (message.type) {
     case "updateFiles":
-      files = message.files || [];
-      renderFiles();
+      receivedFiles = message.files || [];
+      renderReceivedFiles();
+      break;
+    case "updateLocalFiles":
+      localFiles = message.files || [];
+      renderLocalFiles();
+      break;
+    case "qrCodeDataUrl":
+      showQrModal(message.dataUrl, message.fileName);
+      break;
+    case "qrCodeError":
+      hideQrModal();
       break;
   }
 });

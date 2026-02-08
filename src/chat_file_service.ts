@@ -25,6 +25,13 @@ export interface ReceivedFile {
   completed: boolean; // 新增：标记文件是否接收完成
 }
 
+/** 本地添加的文件（用于分享/发送） */
+export interface LocalFile {
+  path: string;
+  name: string;
+  size: number;
+}
+
 export interface FileSession {
   fd: number;
   sessionId: string;
@@ -52,10 +59,114 @@ export class ChatFileService {
   private fds: Map<string, FileSession> = new Map();
 
   rootPath: string;
+  private readonly localFilesJsonPath: string;
 
   constructor(rootPath: string) {
     this.rootPath = rootPath;
     fs.mkdirSync(`${this.rootPath}/files`, { recursive: true });
+    this.localFilesJsonPath = path.join(this.rootPath, "local-files.json");
+  }
+
+  /**
+   * 获取本地文件列表（用户添加的用于分享的文件）
+   */
+  public getLocalFiles(): LocalFile[] {
+    if (!fs.existsSync(this.localFilesJsonPath)) {
+      return [];
+    }
+    try {
+      const raw = fs.readFileSync(this.localFilesJsonPath, "utf-8");
+      const paths: string[] = JSON.parse(raw);
+      const result: LocalFile[] = [];
+      for (const p of paths) {
+        if (!p || typeof p !== "string") continue;
+        try {
+          if (fs.existsSync(p) && fs.statSync(p).isFile()) {
+            const stat = fs.statSync(p);
+            result.push({
+              path: p,
+              name: path.basename(p),
+              size: stat.size,
+            });
+          }
+        } catch {
+          // 文件已删除或不可读，跳过
+        }
+      }
+      return result;
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * 添加本地文件到列表
+   */
+  public addLocalFile(filePath: string): boolean {
+    try {
+      if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+        return false;
+      }
+      const paths = this.readLocalFilePaths();
+      if (paths.includes(filePath)) return true;
+      paths.push(filePath);
+      this.writeLocalFilePaths(paths);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 从本地文件列表中移除
+   */
+  public removeLocalFile(filePath: string): boolean {
+    try {
+      const paths = this.readLocalFilePaths().filter((p) => p !== filePath);
+      this.writeLocalFilePaths(paths);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 校验路径是否允许通过 HTTP 分享（仅限本地文件列表或接收文件目录下）
+   */
+  public isPathAllowed(fsPath: string): boolean {
+    try {
+      if (!fsPath || !fs.existsSync(fsPath) || !fs.statSync(fsPath).isFile()) {
+        return false;
+      }
+      const realPath = fs.realpathSync(fsPath);
+      const realRoot = fs.realpathSync(this.rootPath);
+      if (realPath === realRoot || realPath.startsWith(realRoot + path.sep)) {
+        return true;
+      }
+      const localPaths = this.getLocalFiles().map((f) => fs.realpathSync(f.path));
+      return localPaths.includes(realPath);
+    } catch {
+      return false;
+    }
+  }
+
+  private readLocalFilePaths(): string[] {
+    if (!fs.existsSync(this.localFilesJsonPath)) return [];
+    try {
+      const raw = fs.readFileSync(this.localFilesJsonPath, "utf-8");
+      const arr = JSON.parse(raw);
+      return Array.isArray(arr) ? arr : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private writeLocalFilePaths(paths: string[]): void {
+    fs.writeFileSync(
+      this.localFilesJsonPath,
+      JSON.stringify(paths, null, 0),
+      "utf-8",
+    );
   }
 
   async handleFileRequest(socket: Socket, msg: ChatMessage, id: string) {
