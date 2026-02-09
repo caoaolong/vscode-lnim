@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>文件 - {{fileName}}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, sans-serif; margin: 0; padding: 24px; background: #1e1e1e; color: #d4d4d4; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+    .card { background: #252526; border-radius: 12px; padding: 32px; max-width: 400px; width: 100%; text-align: center; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+    h1 { font-size: 18px; margin: 0 0 8px; font-weight: 600; word-break: break-all; }
+    .meta { font-size: 13px; color: #858585; margin-bottom: 24px; }
+    .btn { display: inline-block; padding: 12px 24px; background: #0e639c; color: #fff; text-decoration: none; border-radius: 6px; font-size: 14px; border: none; cursor: pointer; }
+    .btn:hover { background: #1177bb; }
+    .btn:disabled, .btn[href="#"] { opacity: 0.5; cursor: not-allowed; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>{{fileName}}</h1>
+    <div class="meta">大小：{{fileSize}}</div>
+    <a href="{{downloadUrl}}" class="btn" download>下载文件</a>
+  </div>
+</body>
+</html>

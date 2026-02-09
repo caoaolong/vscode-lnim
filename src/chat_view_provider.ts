@@ -11,6 +11,7 @@ import {
 } from "./chat_data_store";
 import { ChatContactManager, LinkMessageResult } from "./chat_contact_manager";
 import { ChatFileService } from "./chat_file_service";
+import * as QRCode from "qrcode";
 
 type UserSettings = StoredUserSettings;
 type Contact = StoredContact;
@@ -191,6 +192,91 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case "openFile": {
           const file = data.file as { path: string; name: string };
           await this._chatFileService.openFile(file.path);
+          break;
+        }
+        case "getLocalFiles": {
+          const localFiles = this._chatFileService.getLocalFiles();
+          webviewView.webview.postMessage({
+            type: "updateLocalFiles",
+            files: localFiles,
+          });
+          break;
+        }
+        case "addLocalFiles": {
+          const uris = await vscode.window.showOpenDialog({
+            canSelectMany: true,
+            canSelectFolders: false,
+            canSelectFiles: true,
+          });
+          if (uris && uris.length > 0) {
+            for (const uri of uris) {
+              this._chatFileService.addLocalFile(uri.fsPath);
+            }
+            const localFiles = this._chatFileService.getLocalFiles();
+            webviewView.webview.postMessage({
+              type: "updateLocalFiles",
+              files: localFiles,
+            });
+          }
+          break;
+        }
+        case "deleteLocalFile": {
+          const file = data.file as { path: string; name: string };
+          const answer = await vscode.window.showWarningMessage(
+            `确定从本地文件列表中移除 ${file.name} 吗？`,
+            "移除",
+            "取消",
+          );
+          if (answer !== "移除") {
+            break;
+          }
+          const success = this._chatFileService.removeLocalFile(file.path);
+          if (success) {
+            const localFiles = this._chatFileService.getLocalFiles();
+            webviewView.webview.postMessage({
+              type: "updateLocalFiles",
+              files: localFiles,
+            });
+          }
+          break;
+        }
+        case "generateQrCode": {
+          const file = data.file as {
+            path: string;
+            name: string;
+            size?: number;
+          };
+          const ip = this._userSettings.ip?.trim() || "";
+          const port = this._userSettings.port || ChatViewProvider.DEFAULT_PORT;
+          if (!ip) {
+            vscode.window.showWarningMessage(
+              "请先在设置中配置本机 IP 后再生成二维码",
+            );
+            break;
+          }
+          const params = new URLSearchParams({
+            path: file.path,
+            name: file.name,
+            size: String(file.size ?? 0),
+          });
+          const content = `http://${ip}:${port}/file?${params.toString()}`;
+          try {
+            const dataUrl = await QRCode.toDataURL(content, {
+              width: 256,
+              margin: 2,
+            });
+            webviewView.webview.postMessage({
+              type: "qrCodeDataUrl",
+              dataUrl,
+              fileName: file.name,
+            });
+          } catch (err) {
+            console.error("生成二维码失败:", err);
+            webviewView.webview.postMessage({
+              type: "qrCodeError",
+              message: "生成二维码失败",
+            });
+          }
           break;
         }
         case "warning": {

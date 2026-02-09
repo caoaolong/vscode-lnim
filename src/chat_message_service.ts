@@ -1,4 +1,6 @@
+import * as fs from "fs";
 import * as net from "net";
+import * as path from "path";
 import * as vscode from "vscode";
 import * as crypto from "crypto";
 import { ChatMessageManager, ChatContact } from "./chat_message_manager";
@@ -49,7 +51,6 @@ export interface ChatMessageServiceOptions {
 
 export class ChatMessageService {
   public isServerRunning: boolean = false;
-
   private tcpServer?: net.Server;
   // IP: Client
   private clients: Map<string, Client> = new Map();
@@ -58,6 +59,7 @@ export class ChatMessageService {
   private view?: vscode.WebviewView;
   private readonly messageManager?: ChatMessageManager;
   private readonly fileService: ChatFileService;
+  private readonly extensionUri: vscode.Uri;
   private settings: ChatUserSettings;
 
   constructor(port: number, options: ChatMessageServiceOptions) {
@@ -65,11 +67,194 @@ export class ChatMessageService {
     this.defaultPort = options.defaultPort;
     this.view = options.view;
     this.fileService = options.fileService;
+    this.extensionUri = options.context.extensionUri;
     this.messageManager = new ChatMessageManager(
       options.context.globalStorageUri.fsPath,
     );
     this.settings = options.settings;
     this.startTcpServer(this.currentPort);
+  }
+
+  /**
+   * 在 TCP 连接上解析 HTTP 请求并回复：/file 返回文件信息页，/file/download 返回文件流
+   */
+  private handleHttpOnSocket(socket: net.Socket, buffer: Buffer): void {
+    const raw = buffer.toString("utf8");
+    const endOfHeaders = raw.indexOf("\r\n\r\n");
+    const headerBlock = endOfHeaders >= 0 ? raw.slice(0, endOfHeaders) : raw;
+    const firstLine = headerBlock.split("\r\n")[0] || "";
+    const match = firstLine.match(/^(GET|POST|HEAD)\s+(\/[^?\s]*)(?:\?([^\s]*))?\s+HTTP\/./i);
+    if (!match) {
+      this.sendHttpResponse(socket, 400, { code: 400, message: "Bad Request" });
+      return;
+    }
+    const pathPart = (match[2] || "").replace(/\/+$/, "") || "/";
+    const query = match[3] ? new URLSearchParams(match[3]) : new URLSearchParams();
+
+    if (pathPart === "/file/download") {
+      const filePath = query.get("path") || "";
+      if (!filePath || !this.fileService.isPathAllowed(filePath)) {
+        this.sendHttpResponse(socket, 404, { code: 404, message: "Not Found" });
+        return;
+      }
+      try {
+        const stat = fs.statSync(filePath);
+        const fileName = path.basename(filePath);
+        this.sendHttpFile(socket, filePath, fileName, stat.size);
+      } catch {
+        this.sendHttpResponse(socket, 404, { code: 404, message: "Not Found" });
+      }
+      return;
+    }
+
+    if (pathPart !== "/file") {
+      this.sendHttpResponse(socket, 404, { code: 404, message: "Not Found" });
+      return;
+    }
+
+    const name = query.get("name") || "";
+    const pathParam = query.get("path") || "";
+    const sizeStr = query.get("size") || "0";
+    const size = parseInt(sizeStr, 10) || 0;
+
+    if (!name && !pathParam) {
+      this.sendHttpResponse(socket, 400, { code: 400, message: "Bad Request" });
+      return;
+    }
+
+    if (pathParam && !this.fileService.isPathAllowed(pathParam)) {
+      this.sendHttpResponse(socket, 404, { code: 404, message: "Not Found" });
+      return;
+    }
+
+    const downloadPath = pathParam ? encodeURIComponent(pathParam) : "";
+    const html = this.buildFilePageHtml(name, size, downloadPath);
+    this.sendHttpResponseHtml(socket, 200, html);
+  }
+
+  private formatFileSize(bytes: number): string {
+    if (bytes === 0) return "0 B";
+    const k = 1024;
+    const sizes = ["B", "KB", "MB", "GB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + " " + sizes[i];
+  }
+
+  private buildFilePageHtml(
+    fileName: string,
+    fileSize: number,
+    encodedPath: string,
+  ): string {
+    const templatePath = vscode.Uri.joinPath(
+      this.extensionUri,
+      "resources",
+      "download.html",
+    ).fsPath;
+    let template: string;
+    try {
+      template = fs.readFileSync(templatePath, "utf8");
+    } catch {
+      return this.buildFilePageHtmlFallback(fileName, fileSize, encodedPath);
+    }
+    const sizeStr = this.formatFileSize(fileSize);
+    const downloadUrl = encodedPath ? `/file/download?path=${encodedPath}` : "#";
+    return template
+      .replace(/\{\{fileName\}\}/g, this.escapeHtml(fileName))
+      .replace(/\{\{fileSize\}\}/g, this.escapeHtml(sizeStr))
+      .replace(/\{\{downloadUrl\}\}/g, this.escapeHtml(downloadUrl));
+  }
+
+  private buildFilePageHtmlFallback(
+    fileName: string,
+    fileSize: number,
+    encodedPath: string,
+  ): string {
+    const sizeStr = this.formatFileSize(fileSize);
+    const downloadUrl = encodedPath ? `/file/download?path=${encodedPath}` : "#";
+    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"/><title>文件 - ${this.escapeHtml(fileName)}</title></head><body><h1>${this.escapeHtml(fileName)}</h1><p>大小：${this.escapeHtml(sizeStr)}</p><a href="${this.escapeHtml(downloadUrl)}" download>下载文件</a></body></html>`;
+  }
+
+  private escapeHtml(s: string): string {
+    return s
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  private sendHttpResponse(
+    socket: net.Socket,
+    statusCode: number,
+    body: object,
+  ): void {
+    const bodyStr = JSON.stringify(body);
+    const statusText = statusCode === 200 ? "OK" : statusCode === 404 ? "Not Found" : "Bad Request";
+    const response =
+      `HTTP/1.1 ${statusCode} ${statusText}\r\n` +
+      "Content-Type: application/json; charset=utf-8\r\n" +
+      "Connection: close\r\n" +
+      `Content-Length: ${Buffer.byteLength(bodyStr, "utf8")}\r\n` +
+      "\r\n" +
+      bodyStr;
+    socket.write(response, "utf8", () => {
+      socket.end();
+    });
+    if (socket.remoteAddress) {
+      this.clients.delete(socket.remoteAddress);
+    }
+  }
+
+  private sendHttpResponseHtml(
+    socket: net.Socket,
+    statusCode: number,
+    html: string,
+  ): void {
+    const buf = Buffer.from(html, "utf8");
+    const statusText = statusCode === 200 ? "OK" : "Not Found";
+    const headers =
+      `HTTP/1.1 ${statusCode} ${statusText}\r\n` +
+      "Content-Type: text/html; charset=utf-8\r\n" +
+      "Connection: close\r\n" +
+      `Content-Length: ${buf.length}\r\n` +
+      "\r\n";
+    socket.write(headers, "utf8");
+    socket.write(buf, () => {
+      socket.end();
+    });
+    if (socket.remoteAddress) {
+      this.clients.delete(socket.remoteAddress);
+    }
+  }
+
+  private sendHttpFile(
+    socket: net.Socket,
+    filePath: string,
+    fileName: string,
+    fileSize: number,
+  ): void {
+    const safeName = fileName.replace(/[^\w\u4e00-\u9fa5.-]/g, "_");
+    const disposition = `attachment; filename*=UTF-8''${encodeURIComponent(safeName)}`;
+    const headers =
+      "HTTP/1.1 200 OK\r\n" +
+      "Content-Type: application/octet-stream\r\n" +
+      "Connection: close\r\n" +
+      `Content-Disposition: ${disposition}\r\n` +
+      `Content-Length: ${fileSize}\r\n` +
+      "\r\n";
+    socket.write(headers, "utf8");
+    const stream = fs.createReadStream(filePath);
+    stream.on("error", () => {
+      try {
+        socket.end();
+      } catch {}
+    });
+    stream.pipe(socket, { end: true });
+    stream.on("end", () => {
+      if (socket.remoteAddress) {
+        this.clients.delete(socket.remoteAddress);
+      }
+    });
   }
 
   /**
@@ -105,7 +290,7 @@ export class ChatMessageService {
     if (this.tcpServer) {
       try {
         this.tcpServer.close();
-      } catch {}
+      } catch { }
       this.tcpServer = undefined;
     }
     this.currentPort = port || this.defaultPort;
@@ -307,14 +492,21 @@ export class ChatMessageService {
     }
     // 接收到消息
     socket.on("data", (buffer) => {
-      try {
-        const data = JSON.parse(buffer.toString("utf8")) as ChatMessage;
-        this.handleDataMessage(socket, data);
-      } catch (error) {
-        // uuid是16个字符的hex字符串，编码为8字节的二进制Buffer
-        const fpId = buffer.subarray(0, 8).toString("hex");
-        const fpData = buffer.subarray(8);
-        this.fileService.saveChunk(fpId, fpData);
+      const firstBytes = buffer.toString("utf8", 0, 3);
+      const isHttp = ["GET", "POS", "PUT", "DEL", "OPT"].includes(firstBytes);
+      if (isHttp) {
+        this.handleHttpOnSocket(socket, buffer);
+        return;
+      } else {
+        try {
+          const data = JSON.parse(buffer.toString("utf8")) as ChatMessage;
+          this.handleDataMessage(socket, data);
+        } catch (error) {
+          // uuid是16个字符的hex字符串，编码为8字节的二进制Buffer
+          const fpId = buffer.subarray(0, 8).toString("hex");
+          const fpData = buffer.subarray(8);
+          this.fileService.saveChunk(fpId, fpData);
+        }
       }
     });
     // 接收到离线消息
