@@ -2,6 +2,16 @@
 
 局域网内 P2P 通信与文件传输的 VS Code 扩展。基于 TCP 在局域网内实现即时消息、联系人管理，并支持从电脑向手机扫码传文件。
 
+## 界面预览
+
+联系人、设置与扩展详情：
+
+![联系人与设置](https://raw.githubusercontent.com/caoaolong/vscode-lnim/refs/heads/master/example1.png)
+
+聊天与文件传输：
+
+![聊天与文件传输](https://raw.githubusercontent.com/caoaolong/vscode-lnim/refs/heads/master/example2.png)
+
 ## 功能特性
 
 - **局域网通信**：基于 TCP 的 P2P 通信，无需中心服务器，同一局域网内多台机器可互相收发消息与文件。
