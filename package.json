@@ -5,6 +5,10 @@
   "description": "局域网内P2P通信工具",
   "version": "0.0.6",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/caoaolong/vscode-lnim.git"
+  },
   "engines": {
     "vscode": "^1.105.1"
   },
